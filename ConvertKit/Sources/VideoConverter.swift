@@ -43,13 +43,30 @@ public final class VideoConverter {
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         let outputURL = outDir.appendingPathComponent("\(job.outputBaseName).mp4")
-        return try await convert(sourceURL: source, preset: preset, outputURL: outputURL, progress: progress)
+        return try await convert(sourceURL: source, preset: preset,
+                                 resolution: job.resolution, frameRate: job.frameRate,
+                                 outputURL: outputURL, progress: progress)
+    }
+
+    /// Reads the source geometry + frame rate so callers (the share extension) can
+    /// gate which resolution/frame-rate options to offer.
+    public static func loadSourceInfo(url: URL) async throws -> SourceInfo {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw ConversionError.noVideoTrack
+        }
+        let (natural, transform, fps) = try await track.load(.naturalSize, .preferredTransform, .nominalFrameRate)
+        let rect = CGRect(origin: .zero, size: natural).applying(transform)
+        return SourceInfo(orientedSize: CGSize(width: abs(rect.width), height: abs(rect.height)),
+                          nominalFrameRate: fps)
     }
 
     /// The workhorse. `progress` is reported on a background queue in 0...1.
     public func convert(
         sourceURL: URL,
         preset: Preset,
+        resolution: TargetResolution,
+        frameRate: TargetFrameRate,
         outputURL: URL,
         progress: @escaping (Double) -> Void
     ) async throws -> URL {
@@ -62,21 +79,24 @@ public final class VideoConverter {
         }
         let audioTrack = try await asset.loadTracks(withMediaType: .audio).first
 
-        let (naturalSize, preferredTransform, nominalFrameRate) = try await videoTrack.load(
-            .naturalSize, .preferredTransform, .nominalFrameRate
+        let (naturalSize, preferredTransform, nominalFrameRate, sourceDataRate) = try await videoTrack.load(
+            .naturalSize, .preferredTransform, .nominalFrameRate, .estimatedDataRate
         )
 
         // --- Geometry (pure, unit-tested in VideoLayoutTests). ---
         let layout = VideoLayout.compute(
             naturalSize: naturalSize,
             preferredTransform: preferredTransform,
-            preset: preset
+            targetSize: preset.outputSize(for: resolution),
+            framing: preset.framing
         )
         let renderSize = layout.renderSize
         let finalTransform = layout.transform
+        let videoBitrate = Bitrate.forOutput(resolution: resolution, frameRate: frameRate,
+                                             sourceDataRate: sourceDataRate)
 
         // --- Video composition: does the geometry AND forces SDR Rec.709. ---
-        let fps = VideoLayout.outputFrameRate(sourceNominalFrameRate: nominalFrameRate, preset: preset)
+        let fps = VideoLayout.outputFrameRate(sourceNominalFrameRate: nominalFrameRate, target: frameRate)
         let composition = AVMutableVideoComposition()
         composition.renderSize = renderSize
         composition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
@@ -130,7 +150,7 @@ public final class VideoConverter {
                 AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
             ],
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: preset.videoBitrate,
+                AVVideoAverageBitRateKey: videoBitrate,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 AVVideoAllowFrameReorderingKey: true,
             ],
@@ -145,7 +165,7 @@ public final class VideoConverter {
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 44_100,
                 AVNumberOfChannelsKey: 2,
-                AVEncoderBitRateKey: preset.audioBitrate,
+                AVEncoderBitRateKey: Bitrate.audio,
             ])
             input.expectsMediaDataInRealTime = false
             if writer.canAdd(input) { writer.add(input); audioInput = input }

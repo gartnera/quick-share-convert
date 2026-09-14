@@ -13,65 +13,75 @@ final class VideoConverterTests: XCTestCase {
         let asset = AVURLAsset(url: url)
         let track = try await asset.loadTracks(withMediaType: .video).first!
         let size = try await track.load(.naturalSize)
-        let formats = try await track.load(.formatDescriptions)
-        let desc = formats[0]
-        let codec = CMFormatDescriptionGetMediaSubType(desc)
+        let desc = try await track.load(.formatDescriptions)[0]
         let primaries = CMFormatDescriptionGetExtension(
             desc, extensionKey: kCMFormatDescriptionExtension_ColorPrimaries) as? String
-        return (size, codec, primaries)
+        return (size, CMFormatDescriptionGetMediaSubType(desc), primaries)
     }
 
     func testFillSquareProducesExactSquareH264() async throws {
-        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 320, height: 240))
+        // 1920x1080 source is large enough to make an exact 1080x1080 square.
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1920, height: 1080))
         let out = outputURL()
         _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.square")!,
-                                        outputURL: out) { _ in }
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: out.path))
+                                        resolution: .fhd, frameRate: .fps30, outputURL: out) { _ in }
         let info = try await loadTrackInfo(out)
         XCTAssertEqual(info.size, CGSize(width: 1080, height: 1080))
         XCTAssertEqual(info.codec, kCMVideoCodecType_H264)
     }
 
     func testFitLandscapePreservesAspect() async throws {
-        // 320x240 (4:3) into the 1920x1080 fit box -> 1440x1080.
-        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 320, height: 240))
+        // 1920x1440 (4:3) into the 16:9 fit box at 1080 -> 1440x1080.
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1920, height: 1440))
         let out = outputURL()
         _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.feed.landscape")!,
-                                        outputURL: out) { _ in }
+                                        resolution: .fhd, frameRate: .fps30, outputURL: out) { _ in }
         let info = try await loadTrackInfo(out)
         XCTAssertEqual(info.size, CGSize(width: 1440, height: 1080))
     }
 
-    func testOutputIsTaggedSDRRec709() async throws {
-        // HDR is always stripped: the output must be tagged Rec.709 primaries.
-        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 640, height: 360))
+    func testNeverUpscalesBeyondSource() async throws {
+        // 640x480 source asked for 4K square -> clamped to 480x480 (no upscale).
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 640, height: 480))
         let out = outputURL()
-        _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.reels")!,
-                                        outputURL: out) { _ in }
+        _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.square")!,
+                                        resolution: .uhd, frameRate: .fps30, outputURL: out) { _ in }
+        let info = try await loadTrackInfo(out)
+        XCTAssertEqual(info.size, CGSize(width: 480, height: 480))
+    }
+
+    func testOutputIsTaggedSDRRec709() async throws {
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1920, height: 1080))
+        let out = outputURL()
+        _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.square")!,
+                                        resolution: .fhd, frameRate: .fps30, outputURL: out) { _ in }
         let info = try await loadTrackInfo(out)
         XCTAssertEqual(info.primaries as String?, kCMFormatDescriptionColorPrimaries_ITU_R_709_2 as String)
     }
 
     func testProgressReachesCompletion() async throws {
-        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 320, height: 240))
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1280, height: 720))
         let out = outputURL()
         var last = 0.0
         _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.square")!,
-                                        outputURL: out) { p in last = max(last, p) }
+                                        resolution: .fhd, frameRate: .fps30, outputURL: out) { last = max(last, $0) }
         XCTAssertEqual(last, 1.0, accuracy: 0.0001)
     }
 
+    func testLoadSourceInfo() async throws {
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1280, height: 720), fps: 30)
+        let info = try await VideoConverter.loadSourceInfo(url: source)
+        XCTAssertEqual(info.orientedSize, CGSize(width: 1280, height: 720))
+        XCTAssertFalse(info.supports60fps)
+    }
+
     func testMissingVideoTrackThrows() async throws {
-        // A text file is not a valid movie -> noVideoTrack / read error.
         let bogus = FileManager.default.temporaryDirectory.appendingPathComponent("bogus-\(UUID().uuidString).mp4")
         try "not a video".data(using: .utf8)!.write(to: bogus)
         do {
             _ = try await converter.convert(sourceURL: bogus, preset: Preset.instagram[0],
-                                            outputURL: outputURL()) { _ in }
+                                            resolution: .fhd, frameRate: .fps30, outputURL: outputURL()) { _ in }
             XCTFail("expected an error")
-        } catch {
-            // expected
-        }
+        } catch {}
     }
 }

@@ -5,59 +5,53 @@ import Foundation
 /// ratios don't match.
 public enum Framing: String, Codable, Sendable {
     /// Scale to fit inside the target box, preserving aspect ratio. Never crops.
-    /// The output size follows the source aspect (bounded by the target box).
     case fit
-    /// Scale-and-crop so the output exactly fills the target frame. May trim edges.
+    /// Scale-and-crop so the output fills the target frame. May trim edges.
     case fill
 }
 
-/// A conversion preset: the complete recipe for one output.
-///
-/// Presets are intentionally plain data so they can be shown in a picker,
-/// serialized into a job, and (later) edited by the user.
+/// A conversion preset: the output **aspect ratio** and framing rule. The actual
+/// pixel size comes from the user-chosen `TargetResolution`, and the bitrate from
+/// resolution + frame rate (see `Bitrate`). So a preset is "shape", not "size".
 public struct Preset: Codable, Identifiable, Hashable, Sendable {
     public let id: String
     public let name: String
-    public let subtitle: String
     /// SF Symbol used in the picker.
     public let symbol: String
 
-    /// Target frame in pixels. For `.fit` this is the bounding box; for `.fill`
-    /// it's the exact output size.
-    public let width: Int
-    public let height: Int
+    /// Output aspect ratio in orientation (e.g. 9×16 portrait, 16×9 landscape).
+    public let aspectWidth: Int
+    public let aspectHeight: Int
     public let framing: Framing
 
-    /// Cap the output frame rate to this value (source fps is kept if lower).
-    public let maxFrameRate: Int
-    /// Target average video bitrate in bits/sec.
-    public let videoBitrate: Int
-    /// Target audio bitrate in bits/sec.
-    public let audioBitrate: Int
-
-    public var targetSize: CGSize { CGSize(width: width, height: height) }
-
-    public init(
-        id: String,
-        name: String,
-        subtitle: String,
-        symbol: String,
-        width: Int,
-        height: Int,
-        framing: Framing,
-        maxFrameRate: Int = 30,
-        videoBitrate: Int,
-        audioBitrate: Int = 128_000
-    ) {
+    public init(id: String, name: String, symbol: String,
+                aspectWidth: Int, aspectHeight: Int, framing: Framing) {
         self.id = id
         self.name = name
-        self.subtitle = subtitle
         self.symbol = symbol
-        self.width = width
-        self.height = height
+        self.aspectWidth = aspectWidth
+        self.aspectHeight = aspectHeight
         self.framing = framing
-        self.maxFrameRate = maxFrameRate
-        self.videoBitrate = videoBitrate
-        self.audioBitrate = audioBitrate
+    }
+
+    /// e.g. "9:16".
+    public var aspectLabel: String { "\(aspectWidth):\(aspectHeight)" }
+
+    /// Short human description of shape + framing, e.g. "9:16 · cropped".
+    public var subtitle: String {
+        "\(aspectLabel) · \(framing == .fill ? "cropped" : "fit")"
+    }
+
+    /// The output pixel size for a resolution tier: the tier's value is the
+    /// **short edge**, the long edge follows the aspect ratio.
+    public func outputSize(for resolution: TargetResolution) -> CGSize {
+        let short = CGFloat(resolution.shortEdge)
+        let aw = CGFloat(aspectWidth), ah = CGFloat(aspectHeight)
+        if aw == ah { return CGSize(width: short, height: short) }
+        if aw < ah { // portrait: width is the short edge
+            return CGSize(width: short, height: (short * ah / aw).rounded())
+        } else {      // landscape: height is the short edge
+            return CGSize(width: (short * aw / ah).rounded(), height: short)
+        }
     }
 }

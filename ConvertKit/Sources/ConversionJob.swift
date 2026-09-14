@@ -11,12 +11,17 @@ public struct ConversionJob: Codable, Sendable {
     public let outputBaseName: String
     /// Chosen preset id (see `Preset.all`).
     public let presetID: String
+    public let resolution: TargetResolution
+    public let frameRate: TargetFrameRate
     public let createdAt: Date
 
-    public init(sourceFileName: String, outputBaseName: String, presetID: String, createdAt: Date = Date()) {
+    public init(sourceFileName: String, outputBaseName: String, presetID: String,
+                resolution: TargetResolution, frameRate: TargetFrameRate, createdAt: Date = Date()) {
         self.sourceFileName = sourceFileName
         self.outputBaseName = outputBaseName
         self.presetID = presetID
+        self.resolution = resolution
+        self.frameRate = frameRate
         self.createdAt = createdAt
     }
 

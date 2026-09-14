@@ -36,14 +36,22 @@ final class ShareViewController: UIViewController {
             }
             // The provided URL is a short-lived temp file; copy it into the App
             // Group inbox now, while it's still valid.
-            let result = Self.copyIntoInbox(from: url)
-            DispatchQueue.main.async {
-                switch result {
-                case .success(let inboxURL):
-                    self.showPicker(sourceFileName: inboxURL.lastPathComponent,
-                                    originalName: url.deletingPathExtension().lastPathComponent)
-                case .failure(let err):
-                    self.fail(err.localizedDescription)
+            switch Self.copyIntoInbox(from: url) {
+            case .failure(let err):
+                DispatchQueue.main.async { self.fail(err.localizedDescription) }
+            case .success(let inboxURL):
+                let originalName = url.deletingPathExtension().lastPathComponent
+                Task {
+                    do {
+                        // Read source geometry/fps so the picker can gate options.
+                        let info = try await VideoConverter.loadSourceInfo(url: inboxURL)
+                        await MainActor.run {
+                            self.showPicker(sourceFileName: inboxURL.lastPathComponent,
+                                            originalName: originalName, source: info)
+                        }
+                    } catch {
+                        await MainActor.run { self.fail(error.localizedDescription) }
+                    }
                 }
             }
         }
@@ -66,10 +74,12 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Picker
 
-    private func showPicker(sourceFileName: String, originalName: String) {
-        let view = PresetPickerView(
-            onSelect: { [weak self] preset in
-                self?.handoff(sourceFileName: sourceFileName, originalName: originalName, preset: preset)
+    private func showPicker(sourceFileName: String, originalName: String, source: SourceInfo) {
+        let view = ConfigView(
+            source: source,
+            onConvert: { [weak self] preset, resolution, frameRate in
+                self?.handoff(sourceFileName: sourceFileName, originalName: originalName,
+                              preset: preset, resolution: resolution, frameRate: frameRate)
             },
             onCancel: { [weak self] in
                 self?.extensionContext?.cancelRequest(withError: NSError(domain: "QuickShareConvert", code: -1))
@@ -78,12 +88,15 @@ final class ShareViewController: UIViewController {
         show(AnyView(view))
     }
 
-    private func handoff(sourceFileName: String, originalName: String, preset: Preset) {
+    private func handoff(sourceFileName: String, originalName: String, preset: Preset,
+                         resolution: TargetResolution, frameRate: TargetFrameRate) {
         let safeName = originalName.replacingOccurrences(of: "/", with: "-")
         let job = ConversionJob(
             sourceFileName: sourceFileName,
             outputBaseName: "\(safeName.isEmpty ? "video" : safeName)-\(preset.id)",
-            presetID: preset.id
+            presetID: preset.id,
+            resolution: resolution,
+            frameRate: frameRate
         )
         do {
             try job.write()

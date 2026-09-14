@@ -15,8 +15,8 @@ Any app (Photos/Files/…)                Quick Share Convert app
         │                                        │
         ▼                                        ▼
   ShareExtension  ──copy video to App Group──►  reads ConversionJob
-  pick a preset      write ConversionJob        VideoConverter → H.264/AAC, SDR
-        │            open quickshareconvert://   progress UI
+  pick format +      write ConversionJob        VideoConverter → H.264/AAC, SDR
+  resolution + fps   open quickshareconvert://   progress UI
         └───────────────────────────────────►   final UIActivityViewController
 ```
 
@@ -27,25 +27,35 @@ the extension's ~120 MB memory cap.
 
 | Path | What |
 |------|------|
-| `ConvertKit/Sources` | Portable core: `Preset`, `VideoConverter`, `VideoLayout` (pure fit/fill/orientation math), `ConversionJob`, `AppGroup`. No UIKit — reused by iOS today, macOS later. |
+| `ConvertKit/Sources` | Portable core: `Preset`, `TargetOptions` (resolution/frame-rate/bitrate), `VideoConverter`, `VideoLayout` (pure fit/fill/orientation/no-upscale math), `ConversionJob`, `AppGroup`. No UIKit — reused by iOS today, macOS later. |
 | `QuickShareConvert/` | iOS app: picks up the job, converts with progress, presents the share sheet. |
-| `ShareExtension/` | iOS share extension: preset picker + hand-off. |
+| `ShareExtension/` | iOS share extension: format + resolution/fps picker (gated by the source) + hand-off. |
 | `ConvertKitTests/` | Unit tests (layout math, presets, job) + integration tests (real transcode of a synthesized clip). |
 | `project.yml` | XcodeGen spec — the `.xcodeproj` is generated, not committed. |
 | `Package.swift` | Same core as a Swift package so `swift test` runs the engine natively on macOS (no simulator needed). |
 
-## Presets (Instagram)
+## Presets, resolution & frame rate
 
-All export H.264 + AAC in an MP4, SDR Rec.709, ≤30 fps.
+A **preset** is the output *shape* (aspect + framing); the user then picks a
+**resolution** and **frame rate**. All output is H.264 + AAC in an MP4, SDR
+(Rec.709), HDR always stripped.
 
-| Preset | Frame | Framing |
-|--------|-------|---------|
-| Reels / Stories | 1080×1920 | fill (crop) |
-| Feed Portrait | ≤1080×1350 | fit |
-| Square | 1080×1080 | fill (crop) |
-| Feed Landscape | ≤1920×1080 | fit |
+| Preset (Instagram) | Aspect | Framing |
+|--------------------|--------|---------|
+| Reels / Stories | 9:16 | fill (crop) |
+| Feed Portrait | 4:5 | fit |
+| Square | 1:1 | fill (crop) |
+| Feed Landscape | 16:9 | fit |
 
-Edit the catalog in `ConvertKit/Sources/Presets+Instagram.swift`.
+- **Resolution**: 1080p / 2K (1440) / 4K (2160), where the number is the frame's
+  short edge. Tiers that would **upscale** the source are disabled; the converter
+  never upscales (a "1080p" pick on a smaller clip caps at the source).
+- **Frame rate**: 30 / 60. 60 is offered only when the source actually has ≥50fps.
+- **Bitrate**: taken from a resolution+fps table (`Bitrate`), then **clamped to
+  the source's data rate** so a low-bitrate clip isn't re-inflated.
+
+Edit the aspect catalog in `ConvertKit/Sources/Presets+Instagram.swift` and the
+resolution/bitrate tables in `ConvertKit/Sources/TargetOptions.swift`.
 
 ## Build & run
 
@@ -82,7 +92,7 @@ capability. Nothing else to edit. CI builds without signing via
 The engine and its tests build for macOS, so they run without a simulator:
 
 ```sh
-swift test          # 17 tests: layout math, preset/job models, real transcodes
+swift test          # 26 tests: layout/gating math, preset/job/options models, real transcodes
 ```
 
 `swift test` synthesizes short clips on the fly (`TestVideoFactory`) and asserts
