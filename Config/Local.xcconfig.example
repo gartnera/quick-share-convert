@@ -1,0 +1,12 @@
+// Copy this file to `Config/Local.xcconfig` (git-ignored) and fill in your own
+// values. That's the only step needed to build and run on your device.
+//
+//   cp Config/Local.xcconfig.example Config/Local.xcconfig
+
+// Your Apple Developer Team ID — find it at developer.apple.com › Membership,
+// or in Xcode › Settings › Accounts (10 uppercase chars).
+DEVELOPMENT_TEAM = ABCDE12345
+
+// Optional: use your own reverse-DNS prefix so the bundle identifiers and the
+// App Group are unique to your account (recommended when you fork).
+// BUNDLE_ID_PREFIX = com.yourname

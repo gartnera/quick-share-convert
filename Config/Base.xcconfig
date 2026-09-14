@@ -1,0 +1,18 @@
+// Committed project defaults. Do NOT put personal Team IDs here.
+//
+// Each developer overrides these locally in Config/Local.xcconfig (git-ignored):
+//   cp Config/Local.xcconfig.example Config/Local.xcconfig
+// and sets their own DEVELOPMENT_TEAM (and optionally BUNDLE_ID_PREFIX).
+
+// Reverse-DNS prefix for all bundle identifiers and the App Group. Override
+// with your own so the ids are unique to your Apple Developer account.
+BUNDLE_ID_PREFIX = com.agartner
+
+// Apple Developer Team ID (10 chars). Empty by default so the repo builds with
+// CODE_SIGNING_ALLOWED=NO out of the box; set it in Local.xcconfig to run on a
+// device. With automatic signing, Xcode provisions the App Group capability.
+DEVELOPMENT_TEAM =
+
+// Optional per-developer overrides (Team ID, bundle prefix). Optional include:
+// missing file is fine.
+#include? "Local.xcconfig"

@@ -1,0 +1,24 @@
+# Xcode / build
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+
+# XcodeGen output (regenerate with `xcodegen generate`)
+QuickShareConvert.xcodeproj/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Per-developer signing overrides (Team ID, bundle prefix)
+Config/Local.xcconfig
+
+# Locally-ignored scratch
+alexwork/
