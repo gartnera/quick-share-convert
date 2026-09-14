@@ -1,22 +1,10 @@
-import Combine
 import ConvertKit
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
-/// Progress of pulling the shared video into the App Group. The picker shows
-/// immediately; this fills in as the (potentially large 4K HDR) file is imported
-/// in the background, so the user never waits on a blank screen.
-@MainActor
-final class ImportModel: ObservableObject {
-    enum State: Equatable { case importing, ready, failed(String) }
-    @Published var state: State = .importing
-    /// Source geometry/fps, once known — used to gate resolution/fps options.
-    @Published var source: SourceInfo?
-
-    var inboxFileName: String?
-    var originalName: String = "video"
-}
+// ImportModel + ConfigView live in Shared/ConfigView.swift (compiled into both
+// the app and this extension) so both drive the exact same UI.
 
 /// Root of the share extension. Shows the config picker right away and imports
 /// the file in the background. Nothing is transcoded here — the file is moved

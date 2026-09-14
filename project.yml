@@ -43,6 +43,7 @@ targets:
     platform: iOS
     sources:
       - QuickShareConvert
+      - Shared
     dependencies:
       - target: ConvertKit
         embed: true
@@ -61,6 +62,7 @@ targets:
     platform: iOS
     sources:
       - ShareExtension
+      - Shared
     dependencies:
       # Extension links ConvertKit but does NOT embed it; the host app embeds it
       # and the extension resolves it via @rpath at runtime.

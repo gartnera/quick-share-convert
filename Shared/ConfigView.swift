@@ -1,11 +1,25 @@
+import Combine
 import ConvertKit
 import SwiftUI
 
-/// The share-extension screen: choose a format (aspect), a resolution, and a
-/// frame rate, then convert. The screen appears instantly; while the video is
-/// still importing in the background, options are enabled optimistically and
-/// tightened once the source is known. Options the source can't satisfy
-/// (upscaling or inventing frames) are shown but disabled.
+/// Progress of pulling a video into the App Group before conversion. Shared by
+/// the share extension (background import) and the app (PhotoKit import), so both
+/// drive the exact same `ConfigView`.
+@MainActor
+final class ImportModel: ObservableObject {
+    enum State: Equatable { case importing, ready, failed(String) }
+    @Published var state: State = .importing
+    /// Source geometry/fps, once known — used to gate resolution/fps options.
+    @Published var source: SourceInfo?
+
+    var inboxFileName: String?
+    var originalName: String = "video"
+}
+
+/// The conversion setup popup: choose a format (aspect), a resolution, and a
+/// frame rate, then convert. If the video is still importing, options are enabled
+/// optimistically and tightened once the source is known; options the source
+/// can't satisfy (upscaling or inventing frames) are shown but disabled.
 struct ConfigView: View {
     @ObservedObject var model: ImportModel
     var onConvert: (Preset, TargetResolution, TargetFrameRate) -> Void
@@ -92,7 +106,7 @@ struct ConfigView: View {
                 convertRequested = true
                 tryConvert()
             }
-            .fontWeight(.semibold)
+            .buttonStyle(.borderedProminent)
         }
     }
 

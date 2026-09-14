@@ -6,9 +6,10 @@ struct RootView: View {
     @State private var showingShareSheet = false
 
     // In-app PhotoKit import sub-flow (only relevant while idle).
+    @StateObject private var importModel = ImportModel()
     @State private var showPicker = false
     @State private var importing = false
-    @State private var pending: PhotoLibraryImport.Imported?
+    @State private var showConfig = false
     @State private var importError: String?
 
     var body: some View {
@@ -27,11 +28,17 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $showPicker) {
-            PhotoPicker(onPick: { id in
+            PhotoPicker(onPick: { provider in
                 showPicker = false
-                if let id { beginImport(id) }
+                if let provider { beginImport(provider) }
             }, onCancel: { showPicker = false })
             .ignoresSafeArea()
+        }
+        // The exact same popup UI the share extension uses.
+        .sheet(isPresented: $showConfig) {
+            ConfigView(model: importModel,
+                       onConvert: { preset, resolution, frameRate in startConvert(preset, resolution, frameRate) },
+                       onCancel: { showConfig = false; discard() })
         }
         .alert("Couldn’t import the video", isPresented: Binding(
             get: { importError != nil }, set: { if !$0 { importError = nil } }
@@ -45,12 +52,6 @@ struct RootView: View {
         case .idle:
             if importing {
                 ConvertingView(preset: nil, progress: 0, label: "Reading original…")
-            } else if let pending {
-                AppConfigView(
-                    source: pending.source,
-                    onConvert: { preset, resolution, frameRate in startConvert(pending, preset, resolution, frameRate) },
-                    onCancel: { discard(pending) }
-                )
             } else {
                 HomeView(onPick: { showPicker = true })
             }
@@ -63,34 +64,42 @@ struct RootView: View {
         }
     }
 
-    private func beginImport(_ assetID: String) {
+    private func beginImport(_ provider: NSItemProvider) {
         importing = true
         Task {
             do {
-                let imported = try await PhotoLibraryImport.importOriginal(assetID: assetID)
-                await MainActor.run { pending = imported; importing = false }
+                let imported = try await PhotoLibraryImport.importOriginal(from: provider)
+                await MainActor.run {
+                    importModel.inboxFileName = imported.inboxFileName
+                    importModel.originalName = imported.originalName
+                    importModel.source = imported.source
+                    importModel.state = .ready
+                    importing = false
+                    showConfig = true
+                }
             } catch {
                 await MainActor.run { importError = error.localizedDescription; importing = false }
             }
         }
     }
 
-    private func startConvert(_ imported: PhotoLibraryImport.Imported,
-                              _ preset: Preset, _ resolution: TargetResolution, _ frameRate: TargetFrameRate) {
+    private func startConvert(_ preset: Preset, _ resolution: TargetResolution, _ frameRate: TargetFrameRate) {
+        guard let fileName = importModel.inboxFileName else { return }
         let job = ConversionJob(
-            sourceFileName: imported.inboxFileName,
-            outputBaseName: "\(imported.originalName)-\(preset.id)",
+            sourceFileName: fileName,
+            outputBaseName: "\(importModel.originalName)-\(preset.id)",
             presetID: preset.id, resolution: resolution, frameRate: frameRate
         )
-        pending = nil
+        showConfig = false
         controller.run(job)
     }
 
-    private func discard(_ imported: PhotoLibraryImport.Imported) {
-        if let url = AppGroup.inboxURL?.appendingPathComponent(imported.inboxFileName) {
+    private func discard() {
+        if let fileName = importModel.inboxFileName,
+           let url = AppGroup.inboxURL?.appendingPathComponent(fileName) {
             try? FileManager.default.removeItem(at: url)
         }
-        pending = nil
+        importModel.inboxFileName = nil
     }
 }
 

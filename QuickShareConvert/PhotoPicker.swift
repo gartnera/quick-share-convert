@@ -2,15 +2,16 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
-/// System photo picker configured with the shared library so results carry an
-/// `assetIdentifier` — the key that lets us fetch the untouched original via
-/// PhotoKit (unlike the share sheet, which hands over an exported copy).
+/// System photo picker. Needs no Photos authorization (works under Limited
+/// access): we read the file from the result's `itemProvider`, and
+/// `preferredAssetRepresentationMode = .current` avoids a compatibility transcode
+/// so we get the original.
 struct PhotoPicker: UIViewControllerRepresentable {
-    var onPick: (String?) -> Void   // PHAsset local identifier, or nil if none
+    var onPick: (NSItemProvider?) -> Void
     var onCancel: () -> Void
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
-        var config = PHPickerConfiguration(photoLibrary: .shared())
+        var config = PHPickerConfiguration() // no photoLibrary -> no authorization needed
         config.filter = .videos
         config.selectionLimit = 1
         config.preferredAssetRepresentationMode = .current
@@ -29,7 +30,7 @@ struct PhotoPicker: UIViewControllerRepresentable {
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
             guard let result = results.first else { parent.onCancel(); return }
-            parent.onPick(result.assetIdentifier)
+            parent.onPick(result.itemProvider)
         }
     }
 }
