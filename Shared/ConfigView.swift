@@ -30,6 +30,7 @@ struct ConfigView: View {
     @State private var frameRate: TargetFrameRate = .fps30
     @State private var convertRequested = false
     @State private var showError = false
+    @State private var appliedDefaults = false
 
     private var availableResolutions: [TargetResolution] {
         model.source?.availableResolutions(for: preset) ?? TargetResolution.allCases
@@ -89,8 +90,9 @@ struct ConfigView: View {
                 ToolbarItem(placement: .confirmationAction) { convertButton }
             }
         }
-        .onChange(of: model.state) { _, _ in tightenForSource(); tryConvert() }
-        .onChange(of: model.source) { _, _ in tightenForSource() }
+        .onAppear { applyDefaultsIfNeeded() }
+        .onChange(of: model.state) { _, _ in applyDefaultsIfNeeded(); tightenForSource(); tryConvert() }
+        .onChange(of: model.source) { _, _ in applyDefaultsIfNeeded(); tightenForSource() }
         .alert("Couldn’t read the video", isPresented: $showError) {
             Button("Close", role: .cancel) { onCancel() }
         } message: {
@@ -137,6 +139,16 @@ struct ConfigView: View {
         case .failed: showError = true
         case .importing: break // keep waiting; button shows "Preparing…"
         }
+    }
+
+    /// Once the source is known, default to its native export — the highest
+    /// non-upscaling resolution and the highest frame rate it supports (a 4K60
+    /// clip defaults to 4K · 60). Runs once; the user can then dial it down.
+    private func applyDefaultsIfNeeded() {
+        guard !appliedDefaults, model.source != nil else { return }
+        resolution = availableResolutions.last ?? .fhd
+        frameRate = supports60 ? .fps60 : .fps30
+        appliedDefaults = true
     }
 
     /// When the real source becomes known, drop any now-invalid selection.
