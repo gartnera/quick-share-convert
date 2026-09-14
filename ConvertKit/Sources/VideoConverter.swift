@@ -79,9 +79,13 @@ public final class VideoConverter {
         }
         let audioTrack = try await asset.loadTracks(withMediaType: .audio).first
 
-        let (naturalSize, preferredTransform, nominalFrameRate, sourceDataRate) = try await videoTrack.load(
-            .naturalSize, .preferredTransform, .nominalFrameRate, .estimatedDataRate
+        let (naturalSize, preferredTransform, nominalFrameRate, minFrameDuration) = try await videoTrack.load(
+            .naturalSize, .preferredTransform, .nominalFrameRate, .minFrameDuration
         )
+        let (sourceDataRate, videoFormats) = try await videoTrack.load(.estimatedDataRate, .formatDescriptions)
+        let sourceIsHEVC = videoFormats.first.map {
+            CMFormatDescriptionGetMediaSubType($0) == kCMVideoCodecType_HEVC
+        } ?? false
 
         // --- Geometry (pure, unit-tested in VideoLayoutTests). ---
         let layout = VideoLayout.compute(
@@ -92,14 +96,16 @@ public final class VideoConverter {
         )
         let renderSize = layout.renderSize
         let finalTransform = layout.transform
-        let videoBitrate = Bitrate.forOutput(resolution: resolution, frameRate: frameRate,
-                                             sourceDataRate: sourceDataRate)
+        let videoBitrate = Bitrate.forOutput(renderSize: renderSize, resolution: resolution, frameRate: frameRate,
+                                             sourceDataRate: sourceDataRate, sourceIsHEVC: sourceIsHEVC)
 
         // --- Video composition: does the geometry AND forces SDR Rec.709. ---
         let fps = VideoLayout.outputFrameRate(sourceNominalFrameRate: nominalFrameRate, target: frameRate)
         let composition = AVMutableVideoComposition()
         composition.renderSize = renderSize
-        composition.frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+        composition.frameDuration = VideoLayout.outputFrameDuration(
+            sourceNominalFrameRate: nominalFrameRate, sourceMinFrameDuration: minFrameDuration, target: frameRate
+        )
         composition.colorPrimaries = AVVideoColorPrimaries_ITU_R_709_2
         composition.colorTransferFunction = AVVideoTransferFunction_ITU_R_709_2
         composition.colorYCbCrMatrix = AVVideoYCbCrMatrix_ITU_R_709_2
@@ -153,6 +159,12 @@ public final class VideoConverter {
                 AVVideoAverageBitRateKey: videoBitrate,
                 AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
                 AVVideoAllowFrameReorderingKey: true,
+                // Required with an AutoLevel profile / >30fps sources, otherwise the
+                // encoder may drop frames to satisfy level constraints.
+                AVVideoExpectedSourceFrameRateKey: fps,
+                // Closed GOP no longer than 2s: what Instagram/YouTube ask for and
+                // what keeps seeking snappy after their re-encode.
+                AVVideoMaxKeyFrameIntervalDurationKey: 2.0,
             ],
         ])
         videoInput.expectsMediaDataInRealTime = false
@@ -160,11 +172,15 @@ public final class VideoConverter {
         writer.add(videoInput)
 
         var audioInput: AVAssetWriterInput?
-        if audioOutput != nil {
+        if audioOutput != nil, let audioTrack {
+            // Follow the source: 48 kHz camera audio stays 48 kHz (no resample to
+            // 44.1), mono stays mono. Anything exotic normalizes to 48 kHz stereo.
+            let asbd = try await audioTrack.load(.formatDescriptions).first
+                .flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: 44_100,
-                AVNumberOfChannelsKey: 2,
+                AVSampleRateKey: Bitrate.audioSampleRate(source: asbd?.mSampleRate ?? 48_000),
+                AVNumberOfChannelsKey: Bitrate.audioChannels(source: Int(asbd?.mChannelsPerFrame ?? 2)),
                 AVEncoderBitRateKey: Bitrate.audio,
             ])
             input.expectsMediaDataInRealTime = false

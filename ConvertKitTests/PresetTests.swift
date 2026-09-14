@@ -63,18 +63,61 @@ final class TargetOptionsTests: XCTestCase {
     }
 
     func testBitrateClampsToSource() {
-        // Recommendation for 1080p30 is 8 Mbps; a 3 Mbps source clamps down.
-        XCTAssertEqual(Bitrate.forOutput(resolution: .fhd, frameRate: .fps30, sourceDataRate: 3_000_000), 3_000_000)
+        let fhd16x9 = CGSize(width: 1920, height: 1080)
+        // Recommendation for 1080p30 is 8 Mbps; a 3 Mbps H.264 source clamps down.
+        XCTAssertEqual(Bitrate.forOutput(renderSize: fhd16x9, resolution: .fhd, frameRate: .fps30,
+                                         sourceDataRate: 3_000_000, sourceIsHEVC: false), 3_000_000)
         // A high-bitrate source doesn't raise it above the recommendation.
-        XCTAssertEqual(Bitrate.forOutput(resolution: .fhd, frameRate: .fps30, sourceDataRate: 50_000_000),
+        XCTAssertEqual(Bitrate.forOutput(renderSize: fhd16x9, resolution: .fhd, frameRate: .fps30,
+                                         sourceDataRate: 50_000_000, sourceIsHEVC: false),
                        Bitrate.recommended(resolution: .fhd, frameRate: .fps30))
         // Unknown source rate falls back to the recommendation.
-        XCTAssertEqual(Bitrate.forOutput(resolution: .fhd, frameRate: .fps30, sourceDataRate: 0),
+        XCTAssertEqual(Bitrate.forOutput(renderSize: fhd16x9, resolution: .fhd, frameRate: .fps30,
+                                         sourceDataRate: 0, sourceIsHEVC: false),
                        Bitrate.recommended(resolution: .fhd, frameRate: .fps30))
+    }
+
+    func testBitrateCapIsWiderForHEVCSources() {
+        // A 6 Mbps HEVC clip needs ~9 Mbps of H.264 for equal quality; the 8 Mbps
+        // recommendation stands instead of being clamped to 6.
+        let fhd16x9 = CGSize(width: 1920, height: 1080)
+        XCTAssertEqual(Bitrate.forOutput(renderSize: fhd16x9, resolution: .fhd, frameRate: .fps30,
+                                         sourceDataRate: 6_000_000, sourceIsHEVC: true), 8_000_000)
+        XCTAssertEqual(Bitrate.forOutput(renderSize: fhd16x9, resolution: .fhd, frameRate: .fps30,
+                                         sourceDataRate: 4_000_000, sourceIsHEVC: true), 6_000_000)
+    }
+
+    func testBitrateScalesWithRenderArea() {
+        // 16:9 and 9:16 at 1080 cover the full reference area -> table value.
+        XCTAssertEqual(Bitrate.recommended(renderSize: CGSize(width: 1080, height: 1920),
+                                           resolution: .fhd, frameRate: .fps30), 8_000_000)
+        // A 1080x1080 square is 9/16 of the area -> 4.5 Mbps.
+        XCTAssertEqual(Bitrate.recommended(renderSize: CGSize(width: 1080, height: 1080),
+                                           resolution: .fhd, frameRate: .fps30), 4_500_000)
+        // 4:5 feed portrait 1080x1350 -> 5.625 Mbps.
+        XCTAssertEqual(Bitrate.recommended(renderSize: CGSize(width: 1080, height: 1350),
+                                           resolution: .fhd, frameRate: .fps30), 5_625_000)
+        // 60fps is 1.5x.
+        XCTAssertEqual(Bitrate.recommended(renderSize: CGSize(width: 1920, height: 1080),
+                                           resolution: .fhd, frameRate: .fps60), 12_000_000)
+        // A no-upscale-clamped tiny frame never drops below the floor.
+        XCTAssertEqual(Bitrate.recommended(renderSize: CGSize(width: 240, height: 240),
+                                           resolution: .uhd, frameRate: .fps30), Bitrate.minimum)
+    }
+
+    func testAudioSettingsFollowSource() {
+        XCTAssertEqual(Bitrate.audioSampleRate(source: 48_000), 48_000)
+        XCTAssertEqual(Bitrate.audioSampleRate(source: 44_100), 44_100)
+        XCTAssertEqual(Bitrate.audioSampleRate(source: 96_000), 48_000)
+        XCTAssertEqual(Bitrate.audioSampleRate(source: 22_050), 48_000)
+        XCTAssertEqual(Bitrate.audioChannels(source: 1), 1)
+        XCTAssertEqual(Bitrate.audioChannels(source: 2), 2)
+        XCTAssertEqual(Bitrate.audioChannels(source: 6), 2)
     }
 }
 
 final class ConversionJobTests: XCTestCase {
+
     func testJobCodableRoundTrip() throws {
         let job = ConversionJob(sourceFileName: "abc.mov", outputBaseName: "clip", presetID: "ig.square",
                                 resolution: .qhd, frameRate: .fps60)

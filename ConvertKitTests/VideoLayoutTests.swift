@@ -1,3 +1,4 @@
+import CoreMedia
 import XCTest
 @testable import ConvertKit
 
@@ -69,5 +70,26 @@ final class VideoLayoutTests: XCTestCase {
         XCTAssertEqual(VideoLayout.outputFrameRate(sourceNominalFrameRate: 24, target: .fps30), 24)
         XCTAssertEqual(VideoLayout.outputFrameRate(sourceNominalFrameRate: 30, target: .fps60), 30)
         XCTAssertEqual(VideoLayout.outputFrameRate(sourceNominalFrameRate: 0, target: .fps30), 30)
+    }
+
+    func testFrameDurationKeepsSourceCadenceWhenNotReducing() {
+        let ntsc = CMTime(value: 1001, timescale: 30000) // 29.97
+        // 29.97 -> 30 tier: keep the exact 1001/30000 cadence, don't resample to 1/30.
+        XCTAssertEqual(VideoLayout.outputFrameDuration(sourceNominalFrameRate: 29.97, sourceMinFrameDuration: ntsc,
+                                                       target: .fps30), ntsc)
+        let film = CMTime(value: 1001, timescale: 24000) // 23.976
+        XCTAssertEqual(VideoLayout.outputFrameDuration(sourceNominalFrameRate: 23.976, sourceMinFrameDuration: film,
+                                                       target: .fps30), film)
+        // 60 -> 30 is a reduction: exactly 1/30.
+        XCTAssertEqual(VideoLayout.outputFrameDuration(sourceNominalFrameRate: 60,
+                                                       sourceMinFrameDuration: CMTime(value: 1, timescale: 60),
+                                                       target: .fps30), CMTime(value: 1, timescale: 30))
+        // VFR source (min frame duration far shorter than nominal): fall back to the integer rate.
+        XCTAssertEqual(VideoLayout.outputFrameDuration(sourceNominalFrameRate: 30,
+                                                       sourceMinFrameDuration: CMTime(value: 1, timescale: 600),
+                                                       target: .fps30), CMTime(value: 1, timescale: 30))
+        // Unknown min frame duration: integer rate.
+        XCTAssertEqual(VideoLayout.outputFrameDuration(sourceNominalFrameRate: 30, sourceMinFrameDuration: .invalid,
+                                                       target: .fps30), CMTime(value: 1, timescale: 30))
     }
 }

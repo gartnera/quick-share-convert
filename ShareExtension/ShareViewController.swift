@@ -1,98 +1,128 @@
+import Combine
 import ConvertKit
 import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
-/// Root of the share extension. Loads the shared video, shows the preset picker,
-/// then copies the file into the App Group, records a job, and launches the app
-/// to do the (memory-heavy) conversion and present the final share sheet.
+/// Progress of pulling the shared video into the App Group. The picker shows
+/// immediately; this fills in as the (potentially large 4K HDR) file is imported
+/// in the background, so the user never waits on a blank screen.
+@MainActor
+final class ImportModel: ObservableObject {
+    enum State: Equatable { case importing, ready, failed(String) }
+    @Published var state: State = .importing
+    /// Source geometry/fps, once known — used to gate resolution/fps options.
+    @Published var source: SourceInfo?
+
+    var inboxFileName: String?
+    var originalName: String = "video"
+}
+
+/// Root of the share extension. Shows the config picker right away and imports
+/// the file in the background. Nothing is transcoded here — the file is moved
+/// (not copied) into the App Group and the app does the conversion later.
 @objc(ShareViewController)
 final class ShareViewController: UIViewController {
     private var hosting: UIHostingController<AnyView>?
+    private let model = ImportModel()
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        show(AnyView(LoadingView()))
-        loadSharedVideo()
-    }
 
-    // MARK: - Loading the incoming item
-
-    private func loadSharedVideo() {
-        guard let item = (extensionContext?.inputItems.first as? NSExtensionItem),
-              let provider = item.attachments?.first(where: {
-                  $0.hasItemConformingToTypeIdentifier(UTType.movie.identifier)
-              }) else {
-            fail("No video was shared.")
+        guard let provider = firstMovieProvider() else {
+            show(AnyView(FailView(message: "No video was shared.") { [weak self] in self?.cancel() }))
             return
         }
+        showConfig()          // instant
+        startImport(provider) // background
+    }
 
-        provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { [weak self] url, error in
-            guard let self else { return }
-            guard let url, error == nil else {
-                DispatchQueue.main.async { self.fail(error?.localizedDescription ?? "Could not read the video.") }
-                return
+    private func firstMovieProvider() -> NSItemProvider? {
+        guard let item = extensionContext?.inputItems.first as? NSExtensionItem else { return nil }
+        return item.attachments?.first { $0.hasItemConformingToTypeIdentifier(UTType.movie.identifier) }
+    }
+
+    // MARK: - Background import
+
+    private func startImport(_ provider: NSItemProvider) {
+        Task { [weak self] in
+            do {
+                let imported = try await Self.importIntoInbox(provider)
+                let info = try await VideoConverter.loadSourceInfo(url: imported.url)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.model.inboxFileName = imported.url.lastPathComponent
+                    self.model.originalName = imported.originalName
+                    self.model.source = info
+                    self.model.state = .ready
+                }
+            } catch {
+                await MainActor.run { self?.model.state = .failed(error.localizedDescription) }
             }
-            // The provided URL is a short-lived temp file; copy it into the App
-            // Group inbox now, while it's still valid.
-            switch Self.copyIntoInbox(from: url) {
-            case .failure(let err):
-                DispatchQueue.main.async { self.fail(err.localizedDescription) }
-            case .success(let inboxURL):
+        }
+    }
+
+    private struct Imported { let url: URL; let originalName: String }
+
+    /// The most specific movie type the provider actually offers. Requesting this
+    /// (e.g. `com.apple.quicktime-movie` for an HEVC clip) makes Photos hand back
+    /// the ORIGINAL bytes instead of transcoding to a generic/compatible format —
+    /// asking for the abstract `public.movie` can trigger an H.264 conversion.
+    private static func preferredMovieType(_ provider: NSItemProvider) -> String {
+        provider.registeredTypeIdentifiers.first {
+            UTType($0)?.conforms(to: .movie) == true
+        } ?? UTType.movie.identifier
+    }
+
+    /// Grabs the shared file and moves it into the App Group inbox. `move` makes
+    /// this a near-instant rename on the same volume instead of copying the whole
+    /// (possibly multi-hundred-MB) file; falls back to copy across volumes.
+    private static func importIntoInbox(_ provider: NSItemProvider) async throws -> Imported {
+        let typeID = preferredMovieType(provider)
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Imported, Error>) in
+            provider.loadFileRepresentation(forTypeIdentifier: typeID) { url, error in
+                guard let url else {
+                    cont.resume(throwing: error ?? ConversionError.sourceMissing)
+                    return
+                }
+                guard let inbox = AppGroup.inboxURL else {
+                    cont.resume(throwing: ConversionError.appGroupUnavailable)
+                    return
+                }
+                let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+                let dest = inbox.appendingPathComponent("\(UUID().uuidString).\(ext)")
                 let originalName = url.deletingPathExtension().lastPathComponent
-                Task {
-                    do {
-                        // Read source geometry/fps so the picker can gate options.
-                        let info = try await VideoConverter.loadSourceInfo(url: inboxURL)
-                        await MainActor.run {
-                            self.showPicker(sourceFileName: inboxURL.lastPathComponent,
-                                            originalName: originalName, source: info)
-                        }
-                    } catch {
-                        await MainActor.run { self.fail(error.localizedDescription) }
-                    }
+                try? FileManager.default.removeItem(at: dest)
+                do {
+                    do { try FileManager.default.moveItem(at: url, to: dest) }
+                    catch { try FileManager.default.copyItem(at: url, to: dest) }
+                    cont.resume(returning: Imported(url: dest, originalName: originalName))
+                } catch {
+                    cont.resume(throwing: error)
                 }
             }
         }
     }
 
-    private static func copyIntoInbox(from url: URL) -> Result<URL, Error> {
-        guard let inbox = AppGroup.inboxURL else {
-            return .failure(ConversionError.appGroupUnavailable)
-        }
-        let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
-        let dest = inbox.appendingPathComponent("\(UUID().uuidString).\(ext)")
-        do {
-            try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.copyItem(at: url, to: dest)
-            return .success(dest)
-        } catch {
-            return .failure(error)
-        }
-    }
+    // MARK: - Picker + hand-off
 
-    // MARK: - Picker
-
-    private func showPicker(sourceFileName: String, originalName: String, source: SourceInfo) {
+    private func showConfig() {
         let view = ConfigView(
-            source: source,
+            model: model,
             onConvert: { [weak self] preset, resolution, frameRate in
-                self?.handoff(sourceFileName: sourceFileName, originalName: originalName,
-                              preset: preset, resolution: resolution, frameRate: frameRate)
+                self?.handoff(preset: preset, resolution: resolution, frameRate: frameRate)
             },
-            onCancel: { [weak self] in
-                self?.extensionContext?.cancelRequest(withError: NSError(domain: "QuickShareConvert", code: -1))
-            }
+            onCancel: { [weak self] in self?.cancel() }
         )
         show(AnyView(view))
     }
 
-    private func handoff(sourceFileName: String, originalName: String, preset: Preset,
-                         resolution: TargetResolution, frameRate: TargetFrameRate) {
-        let safeName = originalName.replacingOccurrences(of: "/", with: "-")
+    private func handoff(preset: Preset, resolution: TargetResolution, frameRate: TargetFrameRate) {
+        guard let fileName = model.inboxFileName else { return } // ConfigView only converts when ready
+        let safeName = model.originalName.replacingOccurrences(of: "/", with: "-")
         let job = ConversionJob(
-            sourceFileName: sourceFileName,
+            sourceFileName: fileName,
             outputBaseName: "\(safeName.isEmpty ? "video" : safeName)-\(preset.id)",
             presetID: preset.id,
             resolution: resolution,
@@ -101,10 +131,9 @@ final class ShareViewController: UIViewController {
         do {
             try job.write()
         } catch {
-            fail(error.localizedDescription)
+            show(AnyView(FailView(message: error.localizedDescription) { [weak self] in self?.cancel() }))
             return
         }
-
         openHostApp(URL(string: "\(AppGroup.urlScheme)://convert")!)
         extensionContext?.completeRequest(returningItems: nil)
     }
@@ -124,10 +153,8 @@ final class ShareViewController: UIViewController {
 
     // MARK: - Helpers
 
-    private func fail(_ message: String) {
-        show(AnyView(FailView(message: message) { [weak self] in
-            self?.extensionContext?.cancelRequest(withError: NSError(domain: "QuickShareConvert", code: -1))
-        }))
+    private func cancel() {
+        extensionContext?.cancelRequest(withError: NSError(domain: "QuickShareConvert", code: -1))
     }
 
     private func show(_ view: AnyView) {
@@ -137,7 +164,7 @@ final class ShareViewController: UIViewController {
         }
         let controller = UIHostingController(rootView: view)
         addChild(controller)
-        controller.view.frame = view is EmptyView ? .zero : self.view.bounds
+        controller.view.frame = self.view.bounds
         controller.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         self.view.addSubview(controller.view)
         controller.didMove(toParent: self)
@@ -145,17 +172,7 @@ final class ShareViewController: UIViewController {
     }
 }
 
-private struct LoadingView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            ProgressView()
-            Text("Loading video…").foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct FailView: View {
+struct FailView: View {
     let message: String
     var onDismiss: () -> Void
     var body: some View {

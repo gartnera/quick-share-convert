@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreMedia
 import Foundation
 
 /// The geometry of one conversion: the output render size and the affine
@@ -85,7 +86,30 @@ public struct VideoLayout: Equatable, Sendable {
         return max(1, min(target.rawValue, source))
     }
 
+    /// The output frame duration for the composition. When the source rate is
+    /// being reduced, this is exactly `1/outputFrameRate`. When the source is
+    /// kept as-is, the source's own cadence is preserved (29.97, 23.976, 59.94)
+    /// instead of a rounded integer rate, so no frames are duplicated or dropped
+    /// by resampling to 30/24/60. VFR sources whose min frame duration doesn't
+    /// match their nominal rate fall back to the integer rate.
+    public static func outputFrameDuration(
+        sourceNominalFrameRate: Float,
+        sourceMinFrameDuration: CMTime,
+        target: TargetFrameRate
+    ) -> CMTime {
+        let fps = outputFrameRate(sourceNominalFrameRate: sourceNominalFrameRate, target: target)
+        let keepingSourceRate = sourceNominalFrameRate > 0 && Int(sourceNominalFrameRate.rounded()) == fps
+        if keepingSourceRate, sourceMinFrameDuration.isNumeric, sourceMinFrameDuration.seconds > 0 {
+            let minRate = 1 / sourceMinFrameDuration.seconds
+            if abs(minRate - Double(sourceNominalFrameRate)) / Double(sourceNominalFrameRate) < 0.02 {
+                return sourceMinFrameDuration
+            }
+        }
+        return CMTime(value: 1, timescale: CMTimeScale(fps))
+    }
+
     /// H.264 requires even dimensions; round each side to the nearest even int.
+
     public static func evenSize(_ size: CGSize) -> CGSize {
         func even(_ v: CGFloat) -> CGFloat { max(2, (v / 2).rounded() * 2) }
         return CGSize(width: even(size.width), height: even(size.height))

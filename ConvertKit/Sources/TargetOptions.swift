@@ -28,10 +28,13 @@ public enum TargetFrameRate: Int, CaseIterable, Codable, Sendable, Identifiable 
     public var label: String { "\(rawValue)" }
 }
 
-/// Recommended average H.264 bitrate for a resolution + frame-rate combination.
-/// Presets are mostly about resolution and target bitrate, so this is the single
-/// source of truth for bitrate; tune per platform later if needed.
+/// Recommended average H.264 bitrate. The table is keyed by resolution tier and
+/// frame rate for the tier's 16:9 reference frame (1920×1080, 2560×1440,
+/// 3840×2160); the actual encode bitrate is scaled to the pixel area the output
+/// frame really has, so a 1080×1080 square or a no-upscale-clamped small frame
+/// isn't handed a 1920×1080 budget.
 public enum Bitrate {
+    /// Table rate for a tier's 16:9 reference frame.
     public static func recommended(resolution: TargetResolution, frameRate: TargetFrameRate) -> Int {
         let base: Int
         switch resolution {
@@ -43,15 +46,54 @@ public enum Bitrate {
         return frameRate == .fps60 ? base * 3 / 2 : base
     }
 
-    /// The bitrate to actually encode with: the recommendation, but never higher
-    /// than the source's data rate (no point inflating a low-bitrate clip).
-    public static func forOutput(resolution: TargetResolution, frameRate: TargetFrameRate,
-                                 sourceDataRate: Float) -> Int {
-        let rec = recommended(resolution: resolution, frameRate: frameRate)
-        return sourceDataRate > 0 ? min(rec, Int(sourceDataRate)) : rec
+    /// Pixel area of the tier's 16:9 reference frame.
+    static func referenceArea(_ resolution: TargetResolution) -> Double {
+        let short = Double(resolution.shortEdge)
+        return short * (short * 16 / 9)
+    }
+
+    /// Table rate scaled by how much of the reference area `renderSize` covers.
+    public static func recommended(renderSize: CGSize, resolution: TargetResolution,
+                                   frameRate: TargetFrameRate) -> Int {
+        let area = Double(renderSize.width * renderSize.height)
+        guard area > 0 else { return recommended(resolution: resolution, frameRate: frameRate) }
+        let ratio = min(area / referenceArea(resolution), 1)
+        let scaled = Double(recommended(resolution: resolution, frameRate: frameRate)) * ratio
+        return max(minimum, Int(scaled.rounded()))
+    }
+
+    /// Never encode below this, however small the frame.
+    public static let minimum = 500_000
+
+    /// H.264 needs roughly this much more bitrate than HEVC for equal quality, so
+    /// an HEVC source's data rate is inflated by it before it caps the output.
+    public static let hevcToH264Factor = 1.5
+
+    /// The bitrate to actually encode with: the area-scaled recommendation, but
+    /// never higher than what the source can justify (no point inflating a
+    /// low-bitrate clip). `sourceIsHEVC` widens the cap because the same visual
+    /// quality costs more bits in H.264 than in HEVC.
+    public static func forOutput(renderSize: CGSize, resolution: TargetResolution, frameRate: TargetFrameRate,
+                                 sourceDataRate: Float, sourceIsHEVC: Bool) -> Int {
+        let rec = recommended(renderSize: renderSize, resolution: resolution, frameRate: frameRate)
+        guard sourceDataRate > 0 else { return rec }
+        let cap = Double(sourceDataRate) * (sourceIsHEVC ? hevcToH264Factor : 1)
+        return max(minimum, min(rec, Int(cap)))
     }
 
     public static let audio = 128_000
+
+    /// Output AAC sample rate: keep the source's if it's a standard delivery rate
+    /// (avoids a needless resample of 48 kHz camera audio down to 44.1), else 48 kHz.
+    public static func audioSampleRate(source: Double) -> Int {
+        let rate = Int(source.rounded())
+        return [44_100, 48_000].contains(rate) ? rate : 48_000
+    }
+
+    /// Output channel count: stereo, or mono when the source is mono.
+    public static func audioChannels(source: Int) -> Int {
+        source >= 2 ? 2 : 1
+    }
 }
 
 /// What we know about the shared source, used to gate which target options are

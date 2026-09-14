@@ -75,7 +75,50 @@ final class VideoConverterTests: XCTestCase {
         XCTAssertFalse(info.supports60fps)
     }
 
+    private func loadAudioInfo(_ url: URL) async throws -> (format: FourCharCode, sampleRate: Double, channels: Int)? {
+        let asset = AVURLAsset(url: url)
+        guard let track = try await asset.loadTracks(withMediaType: .audio).first else { return nil }
+        let desc = try await track.load(.formatDescriptions)[0]
+        let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(desc)!.pointee
+        return (CMFormatDescriptionGetMediaSubType(desc), asbd.mSampleRate, Int(asbd.mChannelsPerFrame))
+    }
+
+    func testMonoAudioAt48kStaysMono48kAAC() async throws {
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1280, height: 720),
+                                                          audio: .init(sampleRate: 48_000, channels: 1))
+        let out = outputURL()
+        _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.square")!,
+                                        resolution: .fhd, frameRate: .fps30, outputURL: out) { _ in }
+        let audio = try await loadAudioInfo(out)
+        XCTAssertNotNil(audio)
+        XCTAssertEqual(audio?.format, kAudioFormatMPEG4AAC)
+        XCTAssertEqual(audio?.sampleRate, 48_000)
+        XCTAssertEqual(audio?.channels, 1)
+    }
+
+    func testStereoAudioAt44kIsPreserved() async throws {
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1280, height: 720),
+                                                          audio: .init(sampleRate: 44_100, channels: 2))
+        let out = outputURL()
+        _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.square")!,
+                                        resolution: .fhd, frameRate: .fps30, outputURL: out) { _ in }
+        let audio = try await loadAudioInfo(out)
+        XCTAssertEqual(audio?.sampleRate, 44_100)
+        XCTAssertEqual(audio?.channels, 2)
+    }
+
+    func testSixtyFpsSourceKeepsSixtyFps() async throws {
+        let source = try await TestVideoFactory.makeVideo(size: CGSize(width: 1280, height: 720), seconds: 1, fps: 60)
+        let out = outputURL()
+        _ = try await converter.convert(sourceURL: source, preset: Preset.preset(withID: "ig.feed.landscape")!,
+                                        resolution: .fhd, frameRate: .fps60, outputURL: out) { _ in }
+        let track = try await AVURLAsset(url: out).loadTracks(withMediaType: .video).first!
+        let fps = try await track.load(.nominalFrameRate)
+        XCTAssertEqual(fps, 60, accuracy: 0.5)
+    }
+
     func testMissingVideoTrackThrows() async throws {
+
         let bogus = FileManager.default.temporaryDirectory.appendingPathComponent("bogus-\(UUID().uuidString).mp4")
         try "not a video".data(using: .utf8)!.write(to: bogus)
         do {

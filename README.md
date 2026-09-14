@@ -51,8 +51,17 @@ A **preset** is the output *shape* (aspect + framing); the user then picks a
   short edge. Tiers that would **upscale** the source are disabled; the converter
   never upscales (a "1080p" pick on a smaller clip caps at the source).
 - **Frame rate**: 30 / 60. 60 is offered only when the source actually has ≥50fps.
-- **Bitrate**: taken from a resolution+fps table (`Bitrate`), then **clamped to
-  the source's data rate** so a low-bitrate clip isn't re-inflated.
+  When the source rate is kept (not reduced), its exact cadence is preserved
+  (29.97 stays 29.97 rather than being resampled to 30).
+- **Bitrate**: taken from a resolution+fps table (`Bitrate`) for the tier's
+  16:9 frame, **scaled to the output's real pixel area** (a 1:1 square gets 9/16
+  of the 16:9 budget), then **clamped to the source's data rate** so a low-bitrate
+  clip isn't re-inflated. HEVC sources get a 1.5× wider cap, since H.264 needs
+  more bits than HEVC for the same quality.
+- **Encoder**: H.264 High profile, B-frames on, closed GOP ≤ 2 s, expected
+  frame rate hinted to the encoder (required with an auto level / 60fps).
+- **Audio**: AAC 128 kbps. Sample rate follows the source when it's 44.1 or
+  48 kHz (else 48 kHz); mono stays mono, anything else becomes stereo.
 
 Edit the aspect catalog in `ConvertKit/Sources/Presets+Instagram.swift` and the
 resolution/bitrate tables in `ConvertKit/Sources/TargetOptions.swift`.
@@ -92,7 +101,7 @@ capability. Nothing else to edit. CI builds without signing via
 The engine and its tests build for macOS, so they run without a simulator:
 
 ```sh
-swift test          # 26 tests: layout/gating math, preset/job/options models, real transcodes
+swift test          # 33 tests: layout/gating math, preset/job/options models, real transcodes
 ```
 
 `swift test` synthesizes short clips on the fly (`TestVideoFactory`) and asserts

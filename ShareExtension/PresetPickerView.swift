@@ -2,18 +2,26 @@ import ConvertKit
 import SwiftUI
 
 /// The share-extension screen: choose a format (aspect), a resolution, and a
-/// frame rate, then convert. Options the source can't satisfy (upscaling or
-/// inventing frames) are shown but disabled.
+/// frame rate, then convert. The screen appears instantly; while the video is
+/// still importing in the background, options are enabled optimistically and
+/// tightened once the source is known. Options the source can't satisfy
+/// (upscaling or inventing frames) are shown but disabled.
 struct ConfigView: View {
-    let source: SourceInfo
+    @ObservedObject var model: ImportModel
     var onConvert: (Preset, TargetResolution, TargetFrameRate) -> Void
     var onCancel: () -> Void
 
     @State private var preset: Preset = Preset.all[0]
     @State private var resolution: TargetResolution = .fhd
     @State private var frameRate: TargetFrameRate = .fps30
+    @State private var convertRequested = false
+    @State private var showError = false
 
-    private var availableResolutions: [TargetResolution] { source.availableResolutions(for: preset) }
+    private var availableResolutions: [TargetResolution] {
+        model.source?.availableResolutions(for: preset) ?? TargetResolution.allCases
+    }
+    private var supports60: Bool { model.source?.supports60fps ?? true }
+    private var isImporting: Bool { model.state == .importing }
 
     var body: some View {
         NavigationStack {
@@ -38,7 +46,7 @@ struct ConfigView: View {
                     SegmentedOptions(
                         options: TargetFrameRate.allCases,
                         selection: $frameRate,
-                        isEnabled: { $0 == .fps30 || source.supports60fps },
+                        isEnabled: { $0 == .fps30 || supports60 },
                         label: { "\($0.label) fps" }
                     )
                 }
@@ -53,11 +61,27 @@ struct ConfigView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Convert") { onConvert(preset, resolution, frameRate) }
-                        .fontWeight(.semibold)
-                }
+                ToolbarItem(placement: .confirmationAction) { convertButton }
             }
+        }
+        .onChange(of: model.state) { _, _ in tightenForSource(); tryConvert() }
+        .onChange(of: model.source) { _, _ in tightenForSource() }
+        .alert("Couldn’t read the video", isPresented: $showError) {
+            Button("Close", role: .cancel) { onCancel() }
+        } message: {
+            if case .failed(let m) = model.state { Text(m) }
+        }
+    }
+
+    @ViewBuilder private var convertButton: some View {
+        if convertRequested && isImporting {
+            HStack(spacing: 6) { ProgressView(); Text("Preparing…") }
+        } else {
+            Button("Convert") {
+                convertRequested = true
+                tryConvert()
+            }
+            .fontWeight(.semibold)
         }
     }
 
@@ -79,8 +103,23 @@ struct ConfigView: View {
         .contentShape(Rectangle())
     }
 
-    /// Keep the resolution selection valid when the chosen format changes what the
-    /// source can produce.
+    /// Once we requested a convert, fire it as soon as the import is ready (or
+    /// surface a failure).
+    private func tryConvert() {
+        guard convertRequested else { return }
+        switch model.state {
+        case .ready: onConvert(preset, resolution, frameRate)
+        case .failed: showError = true
+        case .importing: break // keep waiting; button shows "Preparing…"
+        }
+    }
+
+    /// When the real source becomes known, drop any now-invalid selection.
+    private func tightenForSource() {
+        clampResolution()
+        if !supports60, frameRate == .fps60 { frameRate = .fps30 }
+    }
+
     private func clampResolution() {
         if !availableResolutions.contains(resolution) {
             resolution = availableResolutions.last ?? .fhd
