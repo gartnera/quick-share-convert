@@ -5,6 +5,12 @@ struct RootView: View {
     @EnvironmentObject private var controller: ConversionController
     @State private var showingShareSheet = false
 
+    // In-app PhotoKit import sub-flow (only relevant while idle).
+    @State private var showPicker = false
+    @State private var importing = false
+    @State private var pending: PhotoLibraryImport.Imported?
+    @State private var importError: String?
+
     var body: some View {
         NavigationStack {
             content
@@ -20,39 +26,98 @@ struct RootView: View {
                 ShareSheet(items: [url]) { showingShareSheet = false }
             }
         }
+        .sheet(isPresented: $showPicker) {
+            PhotoPicker(onPick: { id in
+                showPicker = false
+                if let id { beginImport(id) }
+            }, onCancel: { showPicker = false })
+            .ignoresSafeArea()
+        }
+        .alert("Couldn’t import the video", isPresented: Binding(
+            get: { importError != nil }, set: { if !$0 { importError = nil } }
+        )) {
+            Button("OK", role: .cancel) { importError = nil }
+        } message: { Text(importError ?? "") }
     }
 
     @ViewBuilder private var content: some View {
         switch controller.phase {
         case .idle:
-            HomeView()
+            if importing {
+                ConvertingView(preset: nil, progress: 0, label: "Reading original…")
+            } else if let pending {
+                AppConfigView(
+                    source: pending.source,
+                    onConvert: { preset, resolution, frameRate in startConvert(pending, preset, resolution, frameRate) },
+                    onCancel: { discard(pending) }
+                )
+            } else {
+                HomeView(onPick: { showPicker = true })
+            }
         case .converting(let preset, let progress):
             ConvertingView(preset: preset, progress: progress)
         case .finished:
-            // Share sheet is presented; keep a light placeholder underneath.
             ConvertingView(preset: nil, progress: 1)
         case .failed(let message):
             FailedView(message: message) { controller.reset() }
         }
+    }
+
+    private func beginImport(_ assetID: String) {
+        importing = true
+        Task {
+            do {
+                let imported = try await PhotoLibraryImport.importOriginal(assetID: assetID)
+                await MainActor.run { pending = imported; importing = false }
+            } catch {
+                await MainActor.run { importError = error.localizedDescription; importing = false }
+            }
+        }
+    }
+
+    private func startConvert(_ imported: PhotoLibraryImport.Imported,
+                              _ preset: Preset, _ resolution: TargetResolution, _ frameRate: TargetFrameRate) {
+        let job = ConversionJob(
+            sourceFileName: imported.inboxFileName,
+            outputBaseName: "\(imported.originalName)-\(preset.id)",
+            presetID: preset.id, resolution: resolution, frameRate: frameRate
+        )
+        pending = nil
+        controller.run(job)
+    }
+
+    private func discard(_ imported: PhotoLibraryImport.Imported) {
+        if let url = AppGroup.inboxURL?.appendingPathComponent(imported.inboxFileName) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        pending = nil
     }
 }
 
 /// Shown when the app is opened directly (not via a share). Explains the flow
 /// and lists the available presets.
 private struct HomeView: View {
+    var onPick: () -> Void
+
     var body: some View {
         VStack(spacing: 24) {
             Image(systemName: "square.and.arrow.up.on.square")
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
             VStack(spacing: 8) {
-                Text("Share a video to convert it")
+                Text("Convert a video")
                     .font(.title3.weight(.semibold))
-                Text("Open the share sheet on any video, choose **Quick Convert**, pick a preset, and it comes back ready to post — HDR stripped.")
+                Text("Pick a video here, or share one to **Quick Convert** from any app. It comes back ready to post — HDR stripped.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
+            Button(action: onPick) {
+                Label("Pick a video", systemImage: "photo.on.rectangle")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             Divider()
             VStack(alignment: .leading, spacing: 12) {
                 Text("Presets").font(.headline)
@@ -78,18 +143,24 @@ private struct HomeView: View {
 private struct ConvertingView: View {
     let preset: Preset?
     let progress: Double
+    var label: String?
 
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
-            ProgressView(value: progress) {
-                Text(preset.map { "Converting for \($0.name)" } ?? "Finishing up")
-                    .font(.headline)
+            if let label, preset == nil, progress == 0 {
+                ProgressView()
+                Text(label).font(.headline)
+            } else {
+                ProgressView(value: progress) {
+                    Text(preset.map { "Converting for \($0.name)" } ?? "Finishing up")
+                        .font(.headline)
+                }
+                .progressViewStyle(.linear)
+                Text("\(Int(progress * 100))%")
+                    .font(.title2.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
-            .progressViewStyle(.linear)
-            Text("\(Int(progress * 100))%")
-                .font(.title2.monospacedDigit())
-                .foregroundStyle(.secondary)
             Spacer()
         }
     }

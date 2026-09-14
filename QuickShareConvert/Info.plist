@@ -32,6 +32,8 @@
     </array>
     <key>AppGroupIdentifier</key>
     <string>group.$(BUNDLE_ID_PREFIX).quickshareconvert</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>Quick Convert reads the video you pick so it can convert the original at full quality.</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

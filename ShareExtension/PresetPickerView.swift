@@ -52,6 +52,17 @@ struct ConfigView: View {
                 }
 
                 Section {
+                    if let s = model.source {
+                        LabeledContent("Source") {
+                            Text("\(Int(s.orientedSize.width))×\(Int(s.orientedSize.height)) · \(fpsText(s.nominalFrameRate)) fps")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else if isImporting {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Reading video…").foregroundStyle(.secondary)
+                        }
+                    }
                     Text("HDR is always stripped · exports H.264 · bitrate capped to the source")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -124,6 +135,11 @@ struct ConfigView: View {
         if !availableResolutions.contains(resolution) {
             resolution = availableResolutions.last ?? .fhd
         }
+    }
+
+    private func fpsText(_ rate: Float) -> String {
+        let rounded = rate.rounded()
+        return abs(rate - rounded) < 0.05 ? String(Int(rounded)) : String(format: "%.2f", rate)
     }
 }
 
