@@ -49,11 +49,11 @@ final class TargetOptionsTests: XCTestCase {
     func testAvailableResolutionsGatedBySource() {
         // A 4K source can do all tiers for a 16:9 preset.
         let uhd = SourceInfo(orientedSize: CGSize(width: 3840, height: 2160), nominalFrameRate: 30)
-        XCTAssertEqual(uhd.availableResolutions(for: landscape), [.fhd, .qhd, .uhd])
+        XCTAssertEqual(uhd.availableResolutions(for: landscape), [.hd, .fhd, .qhd, .uhd])
 
-        // A 1080p source can't reach 2K/4K without upscaling.
+        // A 1080p source can't reach 2K/4K without upscaling, but can step down to 720p.
         let fhd = SourceInfo(orientedSize: CGSize(width: 1920, height: 1080), nominalFrameRate: 30)
-        XCTAssertEqual(fhd.availableResolutions(for: landscape), [.fhd])
+        XCTAssertEqual(fhd.availableResolutions(for: landscape), [.hd, .fhd])
     }
 
     func testFrameRateGate() {

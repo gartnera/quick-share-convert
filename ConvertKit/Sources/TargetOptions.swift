@@ -4,6 +4,7 @@ import Foundation
 /// Output resolution tier, expressed by the frame's **short edge** in pixels.
 /// (1080p landscape = 1080 tall; a 9:16 vertical at "1080" = 1080 wide.)
 public enum TargetResolution: Int, CaseIterable, Codable, Sendable, Identifiable {
+    case hd = 720     // "720p"
     case fhd = 1080   // "1080p"
     case qhd = 1440   // "2K"
     case uhd = 2160   // "4K"
@@ -12,6 +13,7 @@ public enum TargetResolution: Int, CaseIterable, Codable, Sendable, Identifiable
     public var shortEdge: Int { rawValue }
     public var label: String {
         switch self {
+        case .hd: return "720p"
         case .fhd: return "1080p"
         case .qhd: return "2K"
         case .uhd: return "4K"
@@ -29,8 +31,8 @@ public enum TargetFrameRate: Int, CaseIterable, Codable, Sendable, Identifiable 
 }
 
 /// Recommended average H.264 bitrate. The table is keyed by resolution tier and
-/// frame rate for the tier's 16:9 reference frame (1920×1080, 2560×1440,
-/// 3840×2160); the actual encode bitrate is scaled to the pixel area the output
+/// frame rate for the tier's 16:9 reference frame (1280×720, 1920×1080,
+/// 2560×1440, 3840×2160); the actual encode bitrate is scaled to the pixel area the output
 /// frame really has, so a 1080×1080 square or a no-upscale-clamped small frame
 /// isn't handed a 1920×1080 budget.
 public enum Bitrate {
@@ -38,6 +40,7 @@ public enum Bitrate {
     public static func recommended(resolution: TargetResolution, frameRate: TargetFrameRate) -> Int {
         let base: Int
         switch resolution {
+        case .hd:  base = 4_000_000
         case .fhd: base = 8_000_000
         case .qhd: base = 16_000_000
         case .uhd: base = 40_000_000
