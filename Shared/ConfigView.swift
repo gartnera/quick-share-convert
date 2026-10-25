@@ -57,22 +57,7 @@ struct ConfigView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                switch model.kind {
-                case .video?: videoSections
-                case .photo?: photoSections
-                case .audio?: audioSections
-                case nil: EmptyView() // unsupported file; the error alert explains
-                }
-            }
-            .navigationTitle("Convert")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
-                ToolbarItem(placement: .confirmationAction) { convertButton }
-            }
-        }
+        container
         // The import may already have failed (e.g. an unsupported file) before
         // this view appeared, when onChange can't see it.
         .onAppear { applyDefaultsIfNeeded(); tryConvert() }
@@ -84,6 +69,48 @@ struct ConfigView: View {
             if case .failed(let m) = model.state { Text(m) }
         }
     }
+
+    private var form: some View {
+        Form {
+            switch model.kind {
+            case .video?: videoSections
+            case .photo?: photoSections
+            case .audio?: audioSections
+            case nil: EmptyView() // unsupported file; the error alert explains
+            }
+        }
+    }
+
+    #if os(macOS)
+    /// macOS has no navigation bar here (and an extension panel has no window
+    /// toolbar), so the actions sit in a bottom bar like a dialog's.
+    private var container: some View {
+        VStack(spacing: 0) {
+            form.formStyle(.grouped)
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                convertButton
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+    }
+    #else
+    private var container: some View {
+        NavigationStack {
+            form
+                .navigationTitle("Convert")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: onCancel) }
+                    ToolbarItem(placement: .confirmationAction) { convertButton }
+                }
+        }
+    }
+    #endif
 
     // MARK: - Video
 

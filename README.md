@@ -10,8 +10,8 @@ file pops the system share sheet for its final destination.
   quality, HDR stripped, metadata kept.
 - **Audio**: converts to AAC, ALAC, FLAC, or WAV, keeping song tags + cover art.
 
-The engine and UI are structured so a macOS app is a thin addition later.
-Requires iOS 26 / macOS 26.
+Also runs on macOS: Finder Quick Action / Share menu → options → the result
+lands in Downloads (see [macOS](#macos)). Requires iOS 26 / macOS 26.
 
 ## Flow
 
@@ -33,10 +33,12 @@ the extension's ~120 MB memory cap.
 
 | Path | What |
 |------|------|
-| `ConvertKit/Sources` | Portable core: `ConversionJob` + `ConversionSettings` (per media kind), `MediaConverter` (dispatch + kind detection), `VideoConverter`, `PhotoConverter`, `AudioConverter`, `AudioTags` (tag passthrough), `Preset`, `TargetOptions`, `VideoLayout` (pure fit/fill/orientation/no-upscale math), `AppGroup`. No UIKit — reused by iOS today, macOS later. |
+| `ConvertKit/Sources` | Portable core: `ConversionJob` + `ConversionSettings` (per media kind), `MediaConverter` (dispatch + kind detection), `VideoConverter`, `PhotoConverter`, `AudioConverter`, `AudioTags` (tag passthrough), `Preset`, `TargetOptions`, `VideoLayout` (pure fit/fill/orientation/no-upscale math), `AppGroup`. No UIKit — shared by iOS and macOS. |
 | `QuickShareConvert/` | iOS app: picks up the job, converts with progress, presents the share sheet. Also picks from Photos (videos/photos) or Files (anything, e.g. downloaded audio). |
 | `Shared/` | `ImportModel` (import into the App Group) + `ConfigView` (the options popup), compiled into both the app and the extension. |
 | `ShareExtension/` | iOS share extension: activates for one video, image, or audio file; options picker (gated by the source) + hand-off. |
+| `QuickShareConvertMac/` | macOS app: same controller + status views as iOS (`ConversionController`, `StatusViews`), Open With / drag-drop / Choose File, results saved to Downloads. |
+| `MacExtensions/` | macOS Share + Action (Finder Quick Action) extensions; one view controller, two `Info.plist`s. |
 | `ConvertKitTests/` | Unit tests (layout math, presets, job) + integration tests (real conversions of synthesized clips, images, and audio). |
 | `project.yml` | XcodeGen spec — the `.xcodeproj` is generated, not committed. |
 | `Package.swift` | Same core as a Swift package so `swift test` runs the engine natively on macOS (no simulator needed). |
@@ -158,13 +160,34 @@ xcodebuild -project QuickShareConvert.xcodeproj -scheme QuickShareConvert \
   -sdk iphoneos -configuration Debug build
 ```
 
-## macOS roadmap
+## macOS
 
-The core (`ConvertKit`) is already cross-platform (AVFoundation + CoreGraphics,
-no UIKit). To add macOS: add `macOS` app + `Action`/`Share` app-extension targets
-in `project.yml` reusing `ConvertKit`, and swap the two UIKit glue points
-(`ShareSheet` → `NSSharingServicePicker`, the responder-chain app launch → a
-macOS URL open). No engine changes expected.
+`QuickShareConvertMac` reuses `ConvertKit` and the `Shared/` UI (`ConfigView`,
+`ImportModel`). Ways in:
+
+- **Finder › right-click › Quick Actions › Quick Convert** (Action extension;
+  also in the preview pane). Enable it under System Settings › General › Login
+  Items & Extensions › Finder if it doesn't show.
+- **Share › Quick Convert** from Finder, Photos, etc. (Share extension).
+- **Open With › Quick Convert**, dropping a file on the window or Dock icon,
+  or **Choose File…** in the app.
+
+Both extensions (`MacExtensions/`, one shared view controller) hand off exactly
+like iOS — file into the App Group inbox, `quickshareconvert://convert` opened
+with `NSWorkspace`. The app converts, saves the result to **~/Downloads**, and
+reveals it in Finder (with a Share button for a further destination).
+
+On macOS the App Group is Team-ID prefixed (`<TEAMID>.<prefix>.quickshareconvert`)
+rather than `group.…`, so it needs no portal registration.
+
+```sh
+xcodebuild -project QuickShareConvert.xcodeproj -scheme QuickShareConvertMac \
+  -derivedDataPath build/mac -allowProvisioningUpdates build
+open build/mac/Build/Products/Debug/QuickShareConvert.app   # registers the extensions
+```
+
+Copy the app to `/Applications` for the extensions to stick around across
+rebuilds/cleans.
 
 ## Known caveats
 

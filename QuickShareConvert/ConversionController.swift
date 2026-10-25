@@ -16,10 +16,15 @@ final class ConversionController: ObservableObject {
     @Published private(set) var phase: Phase = .idle
 
     private let converter: MediaConverter
+    /// Takes the converted file from the outbox to where the result should live
+    /// and returns its final URL. iOS keeps it in place (the share sheet is the
+    /// destination); macOS moves it to Downloads.
+    private let deliver: (URL) throws -> URL
     private var isRunning = false
 
-    init(converter: MediaConverter = MediaConverter()) {
+    init(converter: MediaConverter = MediaConverter(), deliver: @escaping (URL) throws -> URL = { $0 }) {
         self.converter = converter
+        self.deliver = deliver
     }
 
     /// Called when the app is opened (by the extension or otherwise). Runs the
@@ -45,7 +50,7 @@ final class ConversionController: ObservableObject {
                 // Source is no longer needed once converted.
                 if let src = job.sourceURL { try? FileManager.default.removeItem(at: src) }
                 ConversionJob.clearPending()
-                self.phase = .finished(url: url)
+                self.phase = .finished(url: try self.deliver(url))
             } catch {
                 ConversionJob.clearPending()
                 self.phase = .failed(message: error.localizedDescription)
