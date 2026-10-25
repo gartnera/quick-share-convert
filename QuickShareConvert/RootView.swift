@@ -8,9 +8,10 @@ struct RootView: View {
     /// sheet is still closing (e.g. a result shared back into Quick Convert).
     @State private var shareItem: ShareItem?
     @State private var sharedURLs: Set<URL> = []
-    /// True from presenting a share sheet until its onDismiss. A result that
-    /// finishes meanwhile is queued: SwiftUI drops a sheet presented while
-    /// another is still animating away.
+    /// True while a share sheet is actually on screen (set when it appears, so
+    /// a presentation SwiftUI dropped doesn't count). A result that finishes
+    /// meanwhile is queued: SwiftUI drops a sheet presented while another is
+    /// still animating away.
     @State private var shareSheetUp = false
     @State private var queuedShare: URL?
 
@@ -19,6 +20,10 @@ struct RootView: View {
     @State private var showPicker = false
     @State private var showFileImporter = false
     @State private var showConfig = false
+    /// Started once the config sheet has fully closed, for the same reason: a
+    /// quick job would finish while it's still animating away and its share
+    /// sheet would be dropped.
+    @State private var jobAfterConfig: ConversionJob?
 
     var body: some View {
         NavigationStack {
@@ -37,6 +42,7 @@ struct RootView: View {
             ShareSheet(items: [item.url]) {
                 if shareItem == item { shareItem = nil }
             }
+            .onAppear { shareSheetUp = true }
         }
         .sheet(isPresented: $showPicker) {
             PhotoPicker(onPick: { provider in
@@ -50,10 +56,10 @@ struct RootView: View {
             if case .success(let url) = result { importModel.load(fileURL: url); showConfig = true }
         }
         // The exact same popup UI the share extension uses.
-        .sheet(isPresented: $showConfig) {
+        .sheet(isPresented: $showConfig, onDismiss: configDismissed) {
             ConfigView(model: importModel,
                        onConvert: { settings in startConvert(settings) },
-                       onCancel: { showConfig = false; importModel.discard() })
+                       onCancel: { showConfig = false })
         }
     }
 
@@ -63,16 +69,22 @@ struct RootView: View {
             HomeView(onPickPhotos: { showPicker = true }, onPickFile: { showFileImporter = true })
         case .converting(let title, let progress):
             ConvertingView(title: title, progress: progress)
-        case .finished:
-            ConvertingView(title: nil, progress: 1)
+        case .finished(let url):
+            // Normally covered by the share sheet; if that was dropped, this
+            // still lets the user share or move on instead of being stuck.
+            FinishedView(fileName: url.lastPathComponent,
+                         onShare: { presentShare(url) },
+                         onDone: { sharedURLs.remove(url); controller.dismissResult(url) })
         case .failed(let message):
             FailedView(message: message) { controller.reset() }
         }
     }
 
+    /// Clears the item first so presenting the same URL again (after SwiftUI
+    /// dropped it) is still a change.
     private func presentShare(_ url: URL) {
-        shareSheetUp = true
-        shareItem = ShareItem(url: url)
+        shareItem = nil
+        Task { @MainActor in shareItem = ShareItem(url: url) }
     }
 
     /// Deletes every shown result except a queued one, then presents that.
@@ -90,8 +102,43 @@ struct RootView: View {
 
     private func startConvert(_ settings: ConversionSettings) {
         guard let job = importModel.makeJob(settings) else { return }
+        jobAfterConfig = job
         showConfig = false
-        controller.run(job)
+    }
+
+    /// Runs the chosen job, or discards the import if the sheet was cancelled
+    /// (including swiped away).
+    private func configDismissed() {
+        if let job = jobAfterConfig {
+            jobAfterConfig = nil
+            controller.run(job)
+        } else {
+            importModel.discard()
+        }
+    }
+}
+
+private struct FinishedView: View {
+    let fileName: String
+    var onShare: () -> Void
+    var onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.green)
+            Text("Converted").font(.headline)
+            Text(fileName)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Share", action: onShare)
+                .buttonStyle(.borderedProminent)
+            Button("Done", action: onDone)
+            Spacer()
+        }
     }
 }
 
