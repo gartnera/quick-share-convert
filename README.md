@@ -1,11 +1,17 @@
 # Quick Share Convert
 
-Convert videos to platform-ready presets straight from the iOS share sheet.
-Share a video → pick a preset → the converted file pops the system share sheet
-for its final destination. HDR is always stripped (tone-mapped to SDR / Rec.709).
+Convert videos, photos, and audio straight from the iOS share sheet (or pick
+from Photos / Files in the app). Share a file → pick options → the converted
+file pops the system share sheet for its final destination.
 
-Starts with **Instagram** presets; the engine and UI are structured so a macOS
-app is a thin addition later.
+- **Video**: Instagram aspect presets, H.264/AAC MP4, HDR always stripped
+  (tone-mapped to SDR / Rec.709).
+- **Photo**: keeps its aspect; converts to JPEG/HEIC with a size cap and
+  quality, HDR stripped, metadata kept.
+- **Audio**: converts to AAC, ALAC, FLAC, or WAV, keeping song tags + cover art.
+
+The engine and UI are structured so a macOS app is a thin addition later.
+Requires iOS 26 / macOS 26.
 
 ## Flow
 
@@ -14,9 +20,9 @@ Any app (Photos/Files/…)                Quick Share Convert app
    share sheet                              (does the heavy work)
         │                                        │
         ▼                                        ▼
-  ShareExtension  ──copy video to App Group──►  reads ConversionJob
-  pick format +      write ConversionJob        VideoConverter → H.264/AAC, SDR
-  resolution + fps   open quickshareconvert://   progress UI
+  ShareExtension  ──move file to App Group───►  reads ConversionJob
+  pick options       write ConversionJob        MediaConverter → Video/Photo/
+  (per media kind)   open quickshareconvert://    AudioConverter, progress UI
         └───────────────────────────────────►   final UIActivityViewController
 ```
 
@@ -27,14 +33,15 @@ the extension's ~120 MB memory cap.
 
 | Path | What |
 |------|------|
-| `ConvertKit/Sources` | Portable core: `Preset`, `TargetOptions` (resolution/frame-rate/bitrate), `VideoConverter`, `VideoLayout` (pure fit/fill/orientation/no-upscale math), `ConversionJob`, `AppGroup`. No UIKit — reused by iOS today, macOS later. |
-| `QuickShareConvert/` | iOS app: picks up the job, converts with progress, presents the share sheet. |
-| `ShareExtension/` | iOS share extension: format + resolution/fps picker (gated by the source) + hand-off. |
-| `ConvertKitTests/` | Unit tests (layout math, presets, job) + integration tests (real transcode of a synthesized clip). |
+| `ConvertKit/Sources` | Portable core: `ConversionJob` + `ConversionSettings` (per media kind), `MediaConverter` (dispatch + kind detection), `VideoConverter`, `PhotoConverter`, `AudioConverter`, `AudioTags` (tag passthrough), `Preset`, `TargetOptions`, `VideoLayout` (pure fit/fill/orientation/no-upscale math), `AppGroup`. No UIKit — reused by iOS today, macOS later. |
+| `QuickShareConvert/` | iOS app: picks up the job, converts with progress, presents the share sheet. Also picks from Photos (videos/photos) or Files (anything, e.g. downloaded audio). |
+| `Shared/` | `ImportModel` (import into the App Group) + `ConfigView` (the options popup), compiled into both the app and the extension. |
+| `ShareExtension/` | iOS share extension: activates for one video, image, or audio file; options picker (gated by the source) + hand-off. |
+| `ConvertKitTests/` | Unit tests (layout math, presets, job) + integration tests (real conversions of synthesized clips, images, and audio). |
 | `project.yml` | XcodeGen spec — the `.xcodeproj` is generated, not committed. |
 | `Package.swift` | Same core as a Swift package so `swift test` runs the engine natively on macOS (no simulator needed). |
 
-## Presets, resolution & frame rate
+## Video: presets, resolution & frame rate
 
 A **preset** is the output *shape* (aspect + framing); the user then picks a
 **resolution** and **frame rate**. All output is H.264 + AAC in an MP4, SDR
@@ -65,6 +72,43 @@ A **preset** is the output *shape* (aspect + framing); the user then picks a
 
 Edit the aspect catalog in `ConvertKit/Sources/Presets+Instagram.swift` and the
 resolution/bitrate tables in `ConvertKit/Sources/TargetOptions.swift`.
+
+## Photo
+
+The photo keeps its own aspect — this is format conversion + compression.
+
+- **Format**: JPEG or HEIC (HEIC only where the device has an encoder).
+- **Size**: Original, or a cap on the **long edge** (4K = 4096, 2K = 2048, 1080).
+  Caps that wouldn't shrink the photo are disabled. Defaults to 4K.
+- **Quality**: High / Medium / Low (0.85 / 0.7 / 0.5).
+- Orientation is baked into the pixels; HDR / gain maps are dropped (8-bit SDR;
+  Display P3 is kept, extended-range/HDR spaces fall back to sRGB); transparency
+  is flattened onto white.
+- **Metadata passes through** (EXIF, TIFF, GPS, IPTC — date, location, camera),
+  with orientation reset and EXIF dimensions updated. Apple's maker note is
+  dropped (it only carries gain-map hints).
+
+## Audio
+
+Input is anything Core Audio decodes (MP3, AAC/M4A, WAV, AIFF, CAF, FLAC, ALAC…),
+typically downloaded files shared from the Files app.
+
+| Codec | Container | Notes |
+|-------|-----------|-------|
+| AAC | .m4a | 128 / 192 / 256 kbps; 44.1/48 kHz, mono or stereo (same rules as video audio). Defaults to the lowest tier ≥ a lossy source's rate. |
+| ALAC | .m4a | lossless, keeps source sample rate + channels |
+| FLAC | .flac | lossless, keeps source sample rate + channels |
+| WAV | .wav | 16-bit PCM (24-bit for >16-bit sources) |
+
+No MP3/Opus output — Apple platforms don't ship those encoders. The UI warns
+when converting a lossy source to a lossless codec.
+
+**Tags + cover art pass through** (`AudioTags`): read from ID3 / iTunes /
+QuickTime metadata (AVFoundation), FLAC Vorbis comments, or WAV RIFF INFO, then
+written as iTunes atoms for M4A (passthrough remux), Vorbis comment + PICTURE
+blocks for FLAC, and a `LIST/INFO` chunk for WAV (which has no album artist,
+disc, or artwork fields). Core Audio's own tag API only writes CAF, hence the
+hand-rolled FLAC/WAV writers.
 
 ## Build & run
 
@@ -101,7 +145,7 @@ capability. Nothing else to edit. CI builds without signing via
 The engine and its tests build for macOS, so they run without a simulator:
 
 ```sh
-swift test          # 33 tests: layout/gating math, preset/job/options models, real transcodes
+swift test          # 57 tests: layout/gating math, models, real video/photo/audio conversions + tag round-trips
 ```
 
 `swift test` synthesizes short clips on the fly (`TestVideoFactory`) and asserts

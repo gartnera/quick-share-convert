@@ -24,11 +24,10 @@
     <dict>
         <key>NSExtensionAttributes</key>
         <dict>
+            <!-- Exactly one video, image, or audio file. There's no dictionary key
+                 for audio, hence the predicate form. -->
             <key>NSExtensionActivationRule</key>
-            <dict>
-                <key>NSExtensionActivationSupportsMovieWithMaxCount</key>
-                <integer>1</integer>
-            </dict>
+            <string>SUBQUERY(extensionItems, $extensionItem, SUBQUERY($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image" || ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.audio").@count == 1).@count == 1</string>
         </dict>
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.share-services</string>

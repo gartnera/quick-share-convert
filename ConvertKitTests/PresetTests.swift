@@ -119,19 +119,39 @@ final class TargetOptionsTests: XCTestCase {
 final class ConversionJobTests: XCTestCase {
 
     func testJobCodableRoundTrip() throws {
-        let job = ConversionJob(sourceFileName: "abc.mov", outputBaseName: "clip", presetID: "ig.square",
-                                resolution: .qhd, frameRate: .fps60)
-        let data = try JSONEncoder().encode(job)
-        let decoded = try JSONDecoder().decode(ConversionJob.self, from: data)
-        XCTAssertEqual(decoded.sourceFileName, "abc.mov")
-        XCTAssertEqual(decoded.presetID, "ig.square")
-        XCTAssertEqual(decoded.resolution, .qhd)
-        XCTAssertEqual(decoded.frameRate, .fps60)
+        let all: [ConversionSettings] = [
+            .video(presetID: "ig.square", resolution: .qhd, frameRate: .fps60),
+            .photo(PhotoOptions(format: .heic, size: .medium, quality: .low)),
+            .audio(AudioOptions(codec: .flac, bitrate: .kbps192)),
+        ]
+        for settings in all {
+            let job = ConversionJob(sourceFileName: "abc", outputBaseName: "clip", settings: settings)
+            let data = try JSONEncoder().encode(job)
+            let decoded = try JSONDecoder().decode(ConversionJob.self, from: data)
+            XCTAssertEqual(decoded.sourceFileName, "abc")
+            XCTAssertEqual(decoded.settings, settings)
+        }
     }
 
-    func testJobResolvesPreset() {
-        let job = ConversionJob(sourceFileName: "x.mov", outputBaseName: "x", presetID: "ig.reels",
-                                resolution: .fhd, frameRate: .fps30)
-        XCTAssertEqual(job.preset?.id, "ig.reels")
+    func testSettingsNameSuffixAndKind() {
+        let video = ConversionSettings.video(presetID: "ig.reels", resolution: .fhd, frameRate: .fps30)
+        XCTAssertEqual(video.kind, .video)
+        XCTAssertEqual(video.nameSuffix, "ig.reels")
+        XCTAssertEqual(video.progressTitle, "Converting for Reels / Stories")
+        XCTAssertEqual(ConversionSettings.photo(PhotoOptions(size: .medium)).nameSuffix, "2048px")
+        XCTAssertEqual(ConversionSettings.photo(PhotoOptions()).nameSuffix, "full")
+        XCTAssertEqual(ConversionSettings.audio(AudioOptions(codec: .aac, bitrate: .kbps192)).nameSuffix, "192k")
+        XCTAssertEqual(ConversionSettings.audio(AudioOptions(codec: .flac)).nameSuffix, "flac")
+    }
+
+    func testMediaKindDetection() {
+        XCTAssertEqual(MediaKind.detect(typeIdentifiers: ["com.apple.quicktime-movie"]), .video)
+        XCTAssertEqual(MediaKind.detect(typeIdentifiers: ["public.heic", "public.jpeg"]), .photo)
+        XCTAssertEqual(MediaKind.detect(typeIdentifiers: ["public.mp3"]), .audio)
+        XCTAssertEqual(MediaKind.detect(typeIdentifiers: ["com.apple.m4a-audio"]), .audio)
+        XCTAssertEqual(MediaKind.detect(typeIdentifiers: ["com.microsoft.waveform-audio"]), .audio)
+        XCTAssertNil(MediaKind.detect(typeIdentifiers: ["public.plain-text"]))
+        XCTAssertEqual(MediaKind.photo.preferredTypeIdentifier(in: ["public.file-url", "public.heic", "public.jpeg"]),
+                       "public.heic")
     }
 }

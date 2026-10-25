@@ -3,14 +3,22 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var controller: ConversionController
-    @State private var showingShareSheet = false
+    /// The result being shared, and every result shown but not yet cleaned up.
+    /// Tracked per URL because a newer job can finish while an older result's
+    /// sheet is still closing (e.g. a result shared back into Quick Convert).
+    @State private var shareItem: ShareItem?
+    @State private var sharedURLs: Set<URL> = []
+    /// True from presenting a share sheet until its onDismiss. A result that
+    /// finishes meanwhile is queued: SwiftUI drops a sheet presented while
+    /// another is still animating away.
+    @State private var shareSheetUp = false
+    @State private var queuedShare: URL?
 
-    // In-app PhotoKit import sub-flow (only relevant while idle).
+    // In-app import sub-flow (only relevant while idle).
     @StateObject private var importModel = ImportModel()
     @State private var showPicker = false
-    @State private var importing = false
+    @State private var showFileImporter = false
     @State private var showConfig = false
-    @State private var importError: String?
 
     var body: some View {
         NavigationStack {
@@ -20,93 +28,78 @@ struct RootView: View {
                 .navigationBarTitleDisplayMode(.inline)
         }
         .onChange(of: controller.phase) { _, phase in
-            if case .finished = phase { showingShareSheet = true }
+            if case .finished(let url) = phase {
+                sharedURLs.insert(url)
+                if shareSheetUp { queuedShare = url } else { presentShare(url) }
+            }
         }
-        .sheet(isPresented: $showingShareSheet, onDismiss: { controller.reset() }) {
-            if case .finished(let url) = controller.phase {
-                ShareSheet(items: [url]) { showingShareSheet = false }
+        .sheet(item: $shareItem, onDismiss: shareSheetDismissed) { item in
+            ShareSheet(items: [item.url]) {
+                if shareItem == item { shareItem = nil }
             }
         }
         .sheet(isPresented: $showPicker) {
             PhotoPicker(onPick: { provider in
                 showPicker = false
-                if let provider { beginImport(provider) }
+                if let provider { importModel.load(from: provider); showConfig = true }
             }, onCancel: { showPicker = false })
             .ignoresSafeArea()
+        }
+        // Files: mainly for downloaded audio, but takes any supported file.
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.audio, .movie, .image]) { result in
+            if case .success(let url) = result { importModel.load(fileURL: url); showConfig = true }
         }
         // The exact same popup UI the share extension uses.
         .sheet(isPresented: $showConfig) {
             ConfigView(model: importModel,
-                       onConvert: { preset, resolution, frameRate in startConvert(preset, resolution, frameRate) },
-                       onCancel: { showConfig = false; discard() })
+                       onConvert: { settings in startConvert(settings) },
+                       onCancel: { showConfig = false; importModel.discard() })
         }
-        .alert("Couldn’t import the video", isPresented: Binding(
-            get: { importError != nil }, set: { if !$0 { importError = nil } }
-        )) {
-            Button("OK", role: .cancel) { importError = nil }
-        } message: { Text(importError ?? "") }
     }
 
     @ViewBuilder private var content: some View {
         switch controller.phase {
         case .idle:
-            if importing {
-                ConvertingView(preset: nil, progress: 0, label: "Reading original…")
-            } else {
-                HomeView(onPick: { showPicker = true })
-            }
-        case .converting(let preset, let progress):
-            ConvertingView(preset: preset, progress: progress)
+            HomeView(onPickPhotos: { showPicker = true }, onPickFile: { showFileImporter = true })
+        case .converting(let title, let progress):
+            ConvertingView(title: title, progress: progress)
         case .finished:
-            ConvertingView(preset: nil, progress: 1)
+            ConvertingView(title: nil, progress: 1)
         case .failed(let message):
             FailedView(message: message) { controller.reset() }
         }
     }
 
-    private func beginImport(_ provider: NSItemProvider) {
-        importing = true
-        Task {
-            do {
-                let imported = try await PhotoLibraryImport.importOriginal(from: provider)
-                await MainActor.run {
-                    importModel.inboxFileName = imported.inboxFileName
-                    importModel.originalName = imported.originalName
-                    importModel.source = imported.source
-                    importModel.state = .ready
-                    importing = false
-                    showConfig = true
-                }
-            } catch {
-                await MainActor.run { importError = error.localizedDescription; importing = false }
-            }
+    private func presentShare(_ url: URL) {
+        shareSheetUp = true
+        shareItem = ShareItem(url: url)
+    }
+
+    /// Deletes every shown result except a queued one, then presents that.
+    private func shareSheetDismissed() {
+        shareSheetUp = false
+        for url in sharedURLs where url != queuedShare {
+            controller.dismissResult(url)
+            sharedURLs.remove(url)
+        }
+        if let next = queuedShare {
+            queuedShare = nil
+            presentShare(next)
         }
     }
 
-    private func startConvert(_ preset: Preset, _ resolution: TargetResolution, _ frameRate: TargetFrameRate) {
-        guard let fileName = importModel.inboxFileName else { return }
-        let job = ConversionJob(
-            sourceFileName: fileName,
-            outputBaseName: "\(importModel.originalName)-\(preset.id)",
-            presetID: preset.id, resolution: resolution, frameRate: frameRate
-        )
+    private func startConvert(_ settings: ConversionSettings) {
+        guard let job = importModel.makeJob(settings) else { return }
         showConfig = false
         controller.run(job)
-    }
-
-    private func discard() {
-        if let fileName = importModel.inboxFileName,
-           let url = AppGroup.inboxURL?.appendingPathComponent(fileName) {
-            try? FileManager.default.removeItem(at: url)
-        }
-        importModel.inboxFileName = nil
     }
 }
 
 /// Shown when the app is opened directly (not via a share). Explains the flow
-/// and lists the available presets.
+/// and lists the available video presets.
 private struct HomeView: View {
-    var onPick: () -> Void
+    var onPickPhotos: () -> Void
+    var onPickFile: () -> Void
 
     var body: some View {
         VStack(spacing: 24) {
@@ -114,22 +107,30 @@ private struct HomeView: View {
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
             VStack(spacing: 8) {
-                Text("Convert a video")
+                Text("Convert a video, photo, or audio file")
                     .font(.title3.weight(.semibold))
-                Text("Pick a video here, or share one to **Quick Convert** from any app. It comes back ready to post — HDR stripped.")
+                    .multilineTextAlignment(.center)
+                Text("Pick one here, or share it to **Quick Convert** from any app. Videos come back ready to post, photos compressed, audio in the codec you choose.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            Button(action: onPick) {
-                Label("Pick a video", systemImage: "photo.on.rectangle")
-                    .frame(maxWidth: .infinity)
+            VStack(spacing: 10) {
+                Button(action: onPickPhotos) {
+                    Label("Pick from Photos", systemImage: "photo.on.rectangle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                Button(action: onPickFile) {
+                    Label("Pick a file", systemImage: "folder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderedProminent)
             .controlSize(.large)
             Divider()
             VStack(alignment: .leading, spacing: 12) {
-                Text("Presets").font(.headline)
+                Text("Video presets").font(.headline)
                 ForEach(Preset.all) { preset in
                     HStack(spacing: 12) {
                         Image(systemName: preset.symbol)
@@ -150,26 +151,20 @@ private struct HomeView: View {
 }
 
 private struct ConvertingView: View {
-    let preset: Preset?
+    let title: String?
     let progress: Double
-    var label: String?
 
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
-            if let label, preset == nil, progress == 0 {
-                ProgressView()
-                Text(label).font(.headline)
-            } else {
-                ProgressView(value: progress) {
-                    Text(preset.map { "Converting for \($0.name)" } ?? "Finishing up")
-                        .font(.headline)
-                }
-                .progressViewStyle(.linear)
-                Text("\(Int(progress * 100))%")
-                    .font(.title2.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            ProgressView(value: progress) {
+                Text(title ?? "Finishing up")
+                    .font(.headline)
             }
+            .progressViewStyle(.linear)
+            Text("\(Int(progress * 100))%")
+                .font(.title2.monospacedDigit())
+                .foregroundStyle(.secondary)
             Spacer()
         }
     }
@@ -195,4 +190,9 @@ private struct FailedView: View {
             Spacer()
         }
     }
+}
+
+private struct ShareItem: Identifiable, Equatable {
+    let url: URL
+    var id: URL { url }
 }

@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.2
 import PackageDescription
 
 // The portable core (models + conversion engine) lives here so it can be built
@@ -8,8 +8,8 @@ import PackageDescription
 let package = Package(
     name: "ConvertKit",
     platforms: [
-        .iOS(.v18),
-        .macOS(.v14),
+        .iOS(.v26),
+        .macOS(.v26),
     ],
     products: [
         .library(name: "ConvertKit", targets: ["ConvertKit"]),

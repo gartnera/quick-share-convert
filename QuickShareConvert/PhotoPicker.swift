@@ -2,7 +2,7 @@ import PhotosUI
 import SwiftUI
 import UIKit
 
-/// System photo picker. Needs no Photos authorization (works under Limited
+/// System photo picker (videos and photos). Needs no Photos authorization (works under Limited
 /// access): we read the file from the result's `itemProvider`, and
 /// `preferredAssetRepresentationMode = .current` avoids a compatibility transcode
 /// so we get the original.
@@ -12,7 +12,7 @@ struct PhotoPicker: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
         var config = PHPickerConfiguration() // no photoLibrary -> no authorization needed
-        config.filter = .videos
+        config.filter = .any(of: [.videos, .images])
         config.selectionLimit = 1
         config.preferredAssetRepresentationMode = .current
         let picker = PHPickerViewController(configuration: config)

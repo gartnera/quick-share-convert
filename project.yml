@@ -3,7 +3,7 @@ name: QuickShareConvert
 options:
   bundleIdPrefix: com.agartner
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "26.0"
   createIntermediateGroups: true
   groupSortPosition: top
 

@@ -8,17 +8,17 @@ import SwiftUI
 final class ConversionController: ObservableObject {
     enum Phase: Equatable {
         case idle
-        case converting(preset: Preset, progress: Double)
+        case converting(title: String, progress: Double)
         case finished(url: URL)
         case failed(message: String)
     }
 
     @Published private(set) var phase: Phase = .idle
 
-    private let converter: VideoConverter
+    private let converter: MediaConverter
     private var isRunning = false
 
-    init(converter: VideoConverter = VideoConverter()) {
+    init(converter: MediaConverter = MediaConverter()) {
         self.converter = converter
     }
 
@@ -30,19 +30,16 @@ final class ConversionController: ObservableObject {
     }
 
     func run(_ job: ConversionJob) {
-        guard let preset = job.preset else {
-            phase = .failed(message: ConversionError.presetNotFound.localizedDescription)
-            return
-        }
+        let title = job.settings.progressTitle
         isRunning = true
-        phase = .converting(preset: preset, progress: 0)
+        phase = .converting(title: title, progress: 0)
 
         Task {
             do {
                 let url = try await converter.convert(job: job) { [weak self] p in
                     Task { @MainActor in
                         guard let self, case .converting = self.phase else { return }
-                        self.phase = .converting(preset: preset, progress: p)
+                        self.phase = .converting(title: title, progress: p)
                     }
                 }
                 // Source is no longer needed once converted.
@@ -57,11 +54,16 @@ final class ConversionController: ObservableObject {
         }
     }
 
-    /// Reset to idle and clean up the produced file after the share sheet closes.
+    /// Clean up a result once its share sheet closes. Only goes idle if that
+    /// result is still the current one: a newer job (e.g. the result was shared
+    /// back into Quick Convert) may already have finished while the sheet closed.
+    func dismissResult(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        if phase == .finished(url: url) { phase = .idle }
+    }
+
+    /// Back to idle after a failure.
     func reset() {
-        if case .finished(let url) = phase {
-            try? FileManager.default.removeItem(at: url)
-        }
         phase = .idle
     }
 }

@@ -7,6 +7,10 @@ public enum ConversionError: LocalizedError {
     case presetNotFound
     case sourceMissing
     case noVideoTrack
+    case noAudioTrack
+    case unreadableImage
+    case unsupportedType
+    case encoderUnavailable(String)
     case readerFailed(String)
     case writerFailed(String)
     case cancelled
@@ -15,8 +19,12 @@ public enum ConversionError: LocalizedError {
         switch self {
         case .appGroupUnavailable: return "The App Group container is not available. Check the app's entitlements."
         case .presetNotFound: return "The selected preset could not be found."
-        case .sourceMissing: return "The source video could not be found."
+        case .sourceMissing: return "The source file could not be found."
         case .noVideoTrack: return "The file does not contain a video track."
+        case .noAudioTrack: return "The file isn't audio this device can decode."
+        case .unreadableImage: return "The file isn't an image this device can decode."
+        case .unsupportedType: return "Only videos, photos, and audio files can be converted."
+        case .encoderUnavailable(let f): return "This device can't encode \(f)."
         case .readerFailed(let m): return "Could not read the video: \(m)"
         case .writerFailed(let m): return "Could not write the video: \(m)"
         case .cancelled: return "Conversion was cancelled."
@@ -31,22 +39,6 @@ public enum ConversionError: LocalizedError {
 /// app today and the macOS app later.
 public final class VideoConverter {
     public init() {}
-
-    /// Converts the source described by `job` into the App Group and returns the
-    /// output URL. Convenience wrapper over ``convert(sourceURL:preset:outputURL:progress:)``.
-    public func convert(job: ConversionJob, progress: @escaping (Double) -> Void) async throws -> URL {
-        guard let preset = job.preset else { throw ConversionError.presetNotFound }
-        guard let source = job.sourceURL, FileManager.default.fileExists(atPath: source.path) else {
-            throw ConversionError.sourceMissing
-        }
-        let outDir = AppGroup.containerURL?.appendingPathComponent("Outbox", isDirectory: true)
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
-        let outputURL = outDir.appendingPathComponent("\(job.outputBaseName).mp4")
-        return try await convert(sourceURL: source, preset: preset,
-                                 resolution: job.resolution, frameRate: job.frameRate,
-                                 outputURL: outputURL, progress: progress)
-    }
 
     /// Reads the source geometry + frame rate so callers (the share extension) can
     /// gate which resolution/frame-rate options to offer.
