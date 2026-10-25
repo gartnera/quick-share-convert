@@ -47,11 +47,12 @@ struct ConfigView: View {
     private var supports60: Bool { videoSource?.supports60fps ?? true }
     private var availablePhotoSizes: [PhotoSize] { photoSource?.availableSizes() ?? PhotoSize.allCases }
 
-    private var settings: ConversionSettings {
+    private var settings: ConversionSettings? {
         switch model.kind {
-        case .video: return .video(presetID: preset.id, resolution: resolution, frameRate: frameRate)
-        case .photo: return .photo(photo)
-        case .audio: return .audio(audio)
+        case .video?: return .video(presetID: preset.id, resolution: resolution, frameRate: frameRate)
+        case .photo?: return .photo(photo)
+        case .audio?: return .audio(audio)
+        case nil: return nil
         }
     }
 
@@ -59,9 +60,10 @@ struct ConfigView: View {
         NavigationStack {
             Form {
                 switch model.kind {
-                case .video: videoSections
-                case .photo: photoSections
-                case .audio: audioSections
+                case .video?: videoSections
+                case .photo?: photoSections
+                case .audio?: audioSections
+                case nil: EmptyView() // unsupported file; the error alert explains
                 }
             }
             .navigationTitle("Convert")
@@ -71,7 +73,9 @@ struct ConfigView: View {
                 ToolbarItem(placement: .confirmationAction) { convertButton }
             }
         }
-        .onAppear { applyDefaultsIfNeeded() }
+        // The import may already have failed (e.g. an unsupported file) before
+        // this view appeared, when onChange can't see it.
+        .onAppear { applyDefaultsIfNeeded(); tryConvert() }
         .onChange(of: model.state) { _, _ in applyDefaultsIfNeeded(); tightenForSource(); tryConvert() }
         .onChange(of: model.source) { _, _ in applyDefaultsIfNeeded(); tightenForSource() }
         .alert("Couldn’t read the file", isPresented: $showError) {
@@ -235,7 +239,7 @@ struct ConfigView: View {
     /// surface a failure).
     private func tryConvert() {
         if case .failed = model.state { showError = true; return }
-        guard convertRequested, model.state == .ready else { return } // else button shows "Preparing…"
+        guard convertRequested, model.state == .ready, let settings else { return } // else "Preparing…"
         onConvert(settings)
     }
 

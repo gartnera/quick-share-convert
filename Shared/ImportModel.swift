@@ -11,8 +11,8 @@ final class ImportModel: ObservableObject {
     enum State: Equatable { case importing, ready, failed(String) }
     @Published var state: State = .importing
     /// Known up front from the shared item's type, so the right options show
-    /// while the file is still importing.
-    @Published var kind: MediaKind = .video
+    /// while the file is still importing. Nil when the type isn't supported.
+    @Published var kind: MediaKind?
     /// What we learned about the file once imported — used to gate options.
     @Published var source: MediaSource?
 
@@ -23,9 +23,7 @@ final class ImportModel: ObservableObject {
     /// detectable from the provider's registered types.
     func load(from provider: NSItemProvider) {
         guard let kind = MediaKind.detect(typeIdentifiers: provider.registeredTypeIdentifiers) else {
-            begin(.video)
-            state = .failed(ConversionError.unsupportedType.localizedDescription)
-            return
+            return failUnsupported()
         }
         begin(kind)
         run { try await InboxImport.importItem(provider, kind: kind) }
@@ -33,14 +31,16 @@ final class ImportModel: ObservableObject {
 
     /// Imports a file picked with the Files importer (e.g. a downloaded song).
     func load(fileURL url: URL) {
-        let types = (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType).map { [$0.identifier] } ?? []
-        guard let kind = MediaKind.detect(typeIdentifiers: types) else {
-            begin(.video)
-            state = .failed(ConversionError.unsupportedType.localizedDescription)
-            return
+        guard let kind = MediaKind.detect(typeIdentifiers: InboxImport.typeIdentifiers(of: url)) else {
+            return failUnsupported()
         }
         begin(kind)
         run { try InboxImport.importFile(url, kind: kind) }
+    }
+
+    private func failUnsupported() {
+        begin(nil)
+        state = .failed(ConversionError.unsupportedType.localizedDescription)
     }
 
     /// The job for the imported file, or nil if it isn't ready yet.
@@ -63,7 +63,7 @@ final class ImportModel: ObservableObject {
     /// Bumped per import so a slow earlier import can't overwrite a newer one.
     private var generation = 0
 
-    private func begin(_ kind: MediaKind) {
+    private func begin(_ kind: MediaKind?) {
         generation += 1
         self.kind = kind
         source = nil
@@ -72,7 +72,8 @@ final class ImportModel: ObservableObject {
     }
 
     private func run(_ importer: @escaping @Sendable () async throws -> InboxImport.Imported) {
-        let kind = self.kind, generation = self.generation
+        guard let kind = self.kind else { return }
+        let generation = self.generation
         Task {
             do {
                 let imported = try await importer()
@@ -113,6 +114,17 @@ enum InboxImport {
                 cont.resume(with: Result { try place(url, move: true, kind: kind) })
             }
         }
+    }
+
+    /// The file's type, read while holding its security scope (on a device,
+    /// files from iCloud Drive or other providers are unreadable without it,
+    /// even for metadata), plus the type its extension implies as a fallback.
+    static func typeIdentifiers(of url: URL) -> [String] {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let content = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
+        let byExtension = UTType(filenameExtension: url.pathExtension)
+        return [content, byExtension].compactMap { $0?.identifier }
     }
 
     /// Copies a security-scoped URL from the Files importer into the inbox (it
